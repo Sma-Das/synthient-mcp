@@ -94,7 +94,7 @@ Host and Origin validation protect the HTTP transport from DNS rebinding and bro
 
 ## Development
 
-Go 1.24 or newer is required.
+Go 1.25 or newer is required.
 
 ```bash
 go test ./...
