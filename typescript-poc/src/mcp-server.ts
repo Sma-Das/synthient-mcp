@@ -23,6 +23,11 @@ function toolSuccess(data: Record<string, unknown>) {
   };
 }
 
+function accountOutput(data: Record<string, unknown>): Record<string, unknown> {
+  const { api_key: _apiKey, apiKey: _camelCaseApiKey, ...safe } = data;
+  return safe;
+}
+
 function toolFailure(error: unknown) {
   let message = 'Synthient request failed unexpectedly. Retry the request.';
 
@@ -92,7 +97,11 @@ export function createSynthientMcpServer(
       outputSchema,
       annotations: readOnlyAnnotations,
     },
-    async (toolContext) => runTool((signal) => client.getAccount(signal), toolContext),
+    async (toolContext) =>
+      runTool(
+        async (signal) => accountOutput(await client.getAccount(signal)),
+        toolContext,
+      ),
   );
 
   server.registerTool(

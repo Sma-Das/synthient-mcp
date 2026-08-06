@@ -53,6 +53,15 @@ describe('Synthient MCP HTTP server', () => {
           body: Buffer.concat(chunks).toString('utf8'),
         });
         response.setHeader('content-type', 'application/json');
+        if (request.url === '/api/v4/account/me') {
+          response.end(
+            JSON.stringify({
+              api_key: 'must-not-leave-the-server',
+              credits: 42,
+            }),
+          );
+          return;
+        }
         response.end(JSON.stringify({ ip: '8.8.8.8', intelligence: { risk_score: 0 } }));
       });
     });
@@ -118,6 +127,13 @@ describe('Synthient MCP HTTP server', () => {
       forwardedFor: '127.0.0.1',
       body: '',
     });
+
+    const account = await client.callTool({
+      name: 'synthient_account',
+      arguments: {},
+    });
+    assert.deepEqual(account.structuredContent, { credits: 42 });
+    assert.equal(seen[1]?.apiKey, 'caller-key-is-preserved');
   });
 
   it('rejects MCP requests without a Synthient API key', async () => {

@@ -1,0 +1,7 @@
+.git
+.github
+.env
+*.log
+coverage
+synthient-mcp
+**/*_test.go

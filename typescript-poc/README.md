@@ -1,4 +1,4 @@
-# Synthient MCP
+# Synthient MCP — TypeScript PoC
 
 A dockerized remote Model Context Protocol server for the [Synthient](https://docs.synthient.com/) intelligence API.
 
@@ -8,7 +8,7 @@ The server uses the current MCP `2026-07-28` stateless protocol and Streamable H
 
 | Tool | Synthient endpoint | Purpose |
 | --- | --- | --- |
-| `synthient_account` | `GET /api/v4/account/me` | Inspect account, scopes, credits, and quota reset timing |
+| `synthient_account` | `GET /api/v4/account/me` | Inspect account, scopes, credits, and quota reset timing; echoed credentials are omitted |
 | `synthient_lookup_ip` | `GET /api/v4/lookup/ip/{ip}` | Enrich one IPv4 or IPv6 address |
 | `synthient_lookup_ips` | `POST /api/v4/lookup/ips` | Enrich up to 1,000 IP addresses in a discounted batch |
 | `synthient_lookup_domain` | `GET /api/v4/lookup/domain/{domain}` | Retrieve Helios domain and honeypot intelligence |
