@@ -1,0 +1,32 @@
+{
+  "name": "synthient-mcp",
+  "version": "0.1.0",
+  "description": "Remote MCP server for the Synthient intelligence API",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.9.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/express": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "express": "^5.2.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.9",
+    "typescript": "^7.0.2",
+    "vitest": "^2.1.9"
+  }
+}
