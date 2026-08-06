@@ -2,13 +2,14 @@
   "name": "synthient-mcp",
   "version": "0.1.0",
   "description": "Remote MCP server for the Synthient intelligence API",
+  "private": true,
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --import tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

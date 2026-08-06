@@ -1,0 +1,14 @@
+services:
+  synthient-mcp:
+    build:
+      context: .
+    image: synthient-mcp:local
+    init: true
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-localhost,127.0.0.1,[::1]}"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-0}"
+      REQUEST_TIMEOUT_MS: "${REQUEST_TIMEOUT_MS:-15000}"
+    restart: unless-stopped

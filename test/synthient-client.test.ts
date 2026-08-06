@@ -65,4 +65,15 @@ describe('SynthientClient', () => {
     assert.equal(error.retryAfter, '12');
     assert.match(error.message, /rate limit exceeded/u);
   });
+
+  it('reports a non-JSON success response as an invalid upstream payload', async () => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response('temporarily unavailable', { status: 200 });
+
+    await assert.rejects(createClient(fetch).getAccount(), (error: unknown) => {
+      assert.ok(error instanceof SynthientApiError);
+      assert.equal(error.status, 502);
+      return true;
+    });
+  });
 });

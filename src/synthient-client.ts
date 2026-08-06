@@ -91,7 +91,15 @@ export class SynthientClient {
       },
     });
 
-    const body: unknown = await response.json().catch(async () => response.text());
+    const rawBody = await response.text();
+    let body: unknown = rawBody;
+    if (rawBody) {
+      try {
+        body = JSON.parse(rawBody) as unknown;
+      } catch {
+        // Keep the text body so upstream non-JSON errors still remain useful.
+      }
+    }
     if (!response.ok) {
       const detail = stringifyErrorBody(body);
       const suffix = detail ? `: ${detail}` : '';
