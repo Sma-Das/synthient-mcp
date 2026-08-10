@@ -4,11 +4,11 @@ FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod go.sum ./
+COPY go/go.mod go/go.sum ./
 RUN go mod download
 
-COPY cmd ./cmd
-COPY internal ./internal
+COPY go/cmd ./cmd
+COPY go/internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \

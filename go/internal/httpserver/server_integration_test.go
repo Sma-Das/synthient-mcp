@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,64 @@ type observedRequest struct {
 
 type headerTransport struct {
 	base http.RoundTripper
+}
+
+func testConfig() config.Config {
+	baseURL, _ := url.Parse("http://127.0.0.1:1/api/v4/")
+	return config.Config{
+		AllowedHosts:     []string{"example.com"},
+		AllowedOrigins:   []string{"example.com"},
+		SynthientBaseURL: baseURL,
+		RequestTimeout:   time.Second,
+		MaxRequestBody:   1 << 20,
+	}
+}
+
+func TestLandingPageIncludesSearchMetadataAndStructuredContent(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	response := httptest.NewRecorder()
+
+	NewHandler(testConfig()).ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Fatalf("content type = %q", got)
+	}
+	body := response.Body.String()
+	for _, required := range []string{
+		"<title>Synthient MCP Server for IP &amp; Domain Intelligence</title>",
+		`<meta name="description"`,
+		`<meta property="og:title"`,
+		`<script type="application/ld+json">`,
+		`<html lang="en">`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("landing page does not contain %q", required)
+		}
+	}
+	if count := strings.Count(body, "<h1>"); count != 1 {
+		t.Errorf("h1 count = %d", count)
+	}
+}
+
+func TestCrawlerControlsKeepProtocolEndpointsOutOfSearch(t *testing.T) {
+	handler := NewHandler(testConfig())
+
+	robotsRequest := httptest.NewRequest(http.MethodGet, "http://example.com/robots.txt", nil)
+	robotsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(robotsResponse, robotsRequest)
+	if robotsResponse.Code != http.StatusOK || !strings.Contains(robotsResponse.Body.String(), "Disallow: /mcp") {
+		t.Fatalf("robots response = %d %q", robotsResponse.Code, robotsResponse.Body.String())
+	}
+
+	mcpRequest := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+	mcpResponse := httptest.NewRecorder()
+	handler.ServeHTTP(mcpResponse, mcpRequest)
+	if got := mcpResponse.Header().Get("X-Robots-Tag"); got != "noindex, nofollow" {
+		t.Fatalf("X-Robots-Tag = %q", got)
+	}
 }
 
 func (transport headerTransport) RoundTrip(request *http.Request) (*http.Response, error) {

@@ -3,5 +3,5 @@
 .env
 *.log
 coverage
-synthient-mcp
-**/*_test.go
+go/synthient-mcp
+go/**/*_test.go
