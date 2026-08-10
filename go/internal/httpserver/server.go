@@ -39,10 +39,7 @@ func NewHandler(cfg config.Config) http.Handler {
 	)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", landingPage)
-	mux.HandleFunc("GET /robots.txt", robots)
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
-		response.Header().Set("X-Robots-Tag", "noindex, nofollow")
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]string{"status": "ok"})
 	})
@@ -52,7 +49,6 @@ func NewHandler(cfg config.Config) http.Handler {
 
 func protectMCP(cfg config.Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("X-Robots-Tag", "noindex, nofollow")
 		if !allowedRequestHost(request.Host, cfg.AllowedHosts) {
 			writeError(response, http.StatusForbidden, "Host header is not allowed")
 			return

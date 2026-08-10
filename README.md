@@ -12,7 +12,6 @@ The server uses the official MCP Go SDK, negotiates protocol `2026-07-28`, and r
 - Trusted-proxy-aware caller IP forwarding
 - Host and browser-origin validation
 - Timeouts, request-size limits, graceful shutdown, and container health checks
-- Crawlable project landing page with Open Graph, Twitter Card, and Schema.org metadata
 - Multi-stage, non-root Docker image and Docker Compose configuration
 
 ## Quick start with Docker
@@ -34,7 +33,6 @@ Once running:
 
 | URL | Purpose |
 | --- | --- |
-| `http://localhost:3000/` | Project landing page |
 | `http://localhost:3000/mcp` | MCP Streamable HTTP endpoint |
 | `http://localhost:3000/healthz` | Container health endpoint |
 
@@ -115,10 +113,8 @@ go vet ./...
 go run ./cmd/server
 ```
 
-The integration suite uses the official MCP Go client to negotiate protocol `2026-07-28`, list all four tools, and execute calls against a mock Synthient API. Tests also cover exact API-key propagation, canonical caller-IP forwarding, error mapping, configuration validation, crawler controls, landing-page metadata, and HTTP defenses.
+The integration suite uses the official MCP Go client to negotiate protocol `2026-07-28`, list all four tools, and execute calls against a mock Synthient API. Tests also cover exact API-key propagation, canonical caller-IP forwarding, error mapping, configuration validation, and HTTP defenses.
 
 ## API behavior
 
 Synthient HTTP failures become MCP tool errors with useful status context but no credential data. A `429` response retains upstream `Retry-After` guidance so clients can react appropriately.
-
-The public `/` page is indexable and describes the project for people and search engines. Protocol and health endpoints return `X-Robots-Tag: noindex, nofollow`, and `robots.txt` excludes them from crawling.
