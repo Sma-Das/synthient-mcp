@@ -133,7 +133,7 @@ git push origin v0.1.0
 
 The `v1.2.3` Git tag produces the Docker tags `1.2.3`, `1.2`, `1`, and `latest`. The workflow can also be started manually from GitHub Actions with a semantic version such as `v1.2.3`.
 
-The repository must define the GitHub Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. The Docker Hub access token needs read and write permission. Published images include an SBOM and build-provenance attestations.
+The repository must define the GitHub Actions variable `DOCKERHUB_USERNAME` and secret `DOCKERHUB_TOKEN`. The Docker Hub access token needs read and write permission for that namespace. Published images include an SBOM and build-provenance attestations.
 
 The integration suite uses the official MCP Go client to negotiate protocol `2026-07-28`, list all four tools, and execute calls against a mock Synthient API. Tests also cover exact API-key propagation, canonical caller-IP forwarding, error mapping, configuration validation, and HTTP defenses.
 
