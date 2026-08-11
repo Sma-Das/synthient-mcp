@@ -16,7 +16,14 @@ The server uses the official MCP Go SDK, negotiates protocol `2026-07-28`, and r
 
 ## Quick start with Docker
 
-Start the Synthient MCP server from the repository root:
+Run the published image from Docker Hub:
+
+```bash
+docker pull smadas/synthient-mcp:latest
+docker run --rm -p 3000:3000 smadas/synthient-mcp:latest
+```
+
+To build from source, start the Synthient MCP server from the repository root:
 
 ```bash
 docker compose up --build
@@ -28,6 +35,8 @@ Or build and run the image directly:
 docker build -t synthient-mcp .
 docker run --rm -p 3000:3000 synthient-mcp
 ```
+
+Published images support `linux/amd64` and `linux/arm64`. Use an immutable version tag such as `smadas/synthient-mcp:1.2.3` in production instead of `latest`.
 
 Once running:
 
@@ -112,6 +121,19 @@ go test ./...
 go vet ./...
 go run ./cmd/server
 ```
+
+## Publishing Docker images
+
+Pushing a semantic-version Git tag publishes a multi-platform image to [Docker Hub](https://hub.docker.com/r/smadas/synthient-mcp). For example:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `v1.2.3` Git tag produces the Docker tags `1.2.3`, `1.2`, `1`, and `latest`. The workflow can also be started manually from GitHub Actions with a semantic version such as `v1.2.3`.
+
+The repository must define the GitHub Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. The Docker Hub access token needs read and write permission. Published images include an SBOM and build-provenance attestations.
 
 The integration suite uses the official MCP Go client to negotiate protocol `2026-07-28`, list all four tools, and execute calls against a mock Synthient API. Tests also cover exact API-key propagation, canonical caller-IP forwarding, error mapping, configuration validation, and HTTP defenses.
 

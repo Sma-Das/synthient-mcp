@@ -1,0 +1,69 @@
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version to publish (for example, v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-docker-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: smadas/synthient-mcp
+
+jobs:
+  publish:
+    name: Build and push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version || github.ref_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version || github.ref_name }}
+            type=semver,pattern={{major}},value=${{ inputs.version || github.ref_name }}
+          labels: |
+            org.opencontainers.image.title=Synthient MCP Server
+            org.opencontainers.image.description=Dockerized MCP server for the Synthient intelligence API
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
