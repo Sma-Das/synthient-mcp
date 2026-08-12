@@ -38,6 +38,14 @@ docker run --rm -p 3000:3000 synthient-mcp
 
 Published images support `linux/amd64` and `linux/arm64`. Use an immutable version tag such as `smadas/synthient-mcp:1.2.3` in production instead of `latest`.
 
+The API key is not installed in the Docker container. The server is stateless and expects the MCP client to send a Synthient API key with each request. Set the key in the environment where your MCP client runs:
+
+```bash
+export SYNTHIENT_API_KEY='your-synthient-api-key'
+```
+
+Then [configure your MCP client](#mcp-client-configuration) to map that value to the `x-api-key` request header. Do not use `docker run -e SYNTHIENT_API_KEY=...`; the container deliberately has no server-wide credential and does not read that variable.
+
 Once running:
 
 | URL | Purpose |
@@ -63,7 +71,7 @@ MCP clients supply an existing Synthient API key in the `x-api-key` request head
 }
 ```
 
-Keep real API keys in your MCP client’s secret store or environment. Never commit them to source control.
+The `${SYNTHIENT_API_KEY}` substitution is performed by the MCP client, not by Docker. If your client does not expand environment variables in its configuration, use its secret store or supported environment-variable syntax instead. Never commit a real API key to source control.
 
 ## Synthient MCP tools
 
