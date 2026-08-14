@@ -5,32 +5,34 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	synthientsdk "github.com/synthient/go-synthient/v2"
 )
 
-func TestAccountOutputOmitsEchoedCredential(t *testing.T) {
-	upstream := map[string]any{
-		"api_key": "must-not-leave-the-server",
-		"email":   "caller@example.com",
-		"credits": float64(42),
-		"nested": map[string]any{
-			"access-token": "must-not-leave-the-server",
-			"safe":         true,
-		},
+func TestUsefulTextSummaries(t *testing.T) {
+	var account synthientsdk.Account
+	account.Email = "caller@example.com"
+	account.Organization.Name = "Example Org"
+	account.LookupQuota.Credits = 42
+	account.LookupQuota.ResetsIn = 60
+	if got := accountSummary(account); !strings.Contains(got, "42 lookup credits") || !strings.Contains(got, "Example Org") {
+		t.Fatalf("account summary = %q", got)
 	}
 
-	output := accountOutput(upstream)
-	if _, exists := output["api_key"]; exists {
-		t.Fatal("account output contains api_key")
+	var ip synthientsdk.IP
+	ip.IP = "8.8.8.8"
+	ip.Network.Asn = 15169
+	ip.Location.Country = "US"
+	ip.Intelligence.RiskScore = 7
+	if got := ipSummary([]synthientsdk.IP{ip}); !strings.Contains(got, "risk score 7") || !strings.Contains(got, "ASN 15169") {
+		t.Fatalf("IP summary = %q", got)
 	}
-	if output["email"] != upstream["email"] || output["credits"] != upstream["credits"] {
-		t.Fatalf("account output lost safe fields: %#v", output)
-	}
-	if upstream["api_key"] == nil {
-		t.Fatal("sanitization mutated the upstream response")
-	}
-	nested := output["nested"].(Output)
-	if _, exists := nested["access-token"]; exists || nested["safe"] != true {
-		t.Fatalf("nested sanitization failed: %#v", nested)
+
+	var domain synthientsdk.Domain
+	domain.Domain = "example.com"
+	domain.Status = "active"
+	domain.Stats.Events24H = 12
+	if got := domainSummary(domain); !strings.Contains(got, "12 events") || !strings.Contains(got, "active") {
+		t.Fatalf("domain summary = %q", got)
 	}
 }
 
@@ -70,11 +72,11 @@ func TestNormalizeDomain(t *testing.T) {
 }
 
 func TestToolSchemasAndMeteringAnnotations(t *testing.T) {
-	account := tool("account", "Account", "Account", false, emptyInputSchema(), accountOutputSchema())
+	account := tool("account", "Account", "Account", false, emptyInputSchema())
 	if !account.Annotations.ReadOnlyHint || !account.Annotations.IdempotentHint || *account.Annotations.DestructiveHint {
 		t.Fatalf("account annotations = %#v", account.Annotations)
 	}
-	lookup := tool("lookup", "Lookup", "Lookup", true, ipsInputSchema(), ipsOutputSchema())
+	lookup := tool("lookup", "Lookup", "Lookup", true, ipsInputSchema())
 	if lookup.Annotations.ReadOnlyHint || lookup.Annotations.IdempotentHint || !*lookup.Annotations.DestructiveHint {
 		t.Fatalf("lookup annotations = %#v", lookup.Annotations)
 	}

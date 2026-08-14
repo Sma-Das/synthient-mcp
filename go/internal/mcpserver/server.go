@@ -8,17 +8,14 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	synthientsdk "github.com/synthient/go-synthient/v2"
 
 	"github.com/Sma-Das/synthient-mcp/go/internal/buildinfo"
 )
 
 type EmptyInput struct{}
 
-type IPInput struct {
-	IP string `json:"ip" jsonschema:"IPv4 or IPv6 address to enrich"`
-}
-
-type IPsInput struct {
+type IPLookupInput struct {
 	IPs []string `json:"ips" jsonschema:"IPv4 or IPv6 addresses to enrich, up to 1000 entries"`
 }
 
@@ -26,13 +23,15 @@ type DomainInput struct {
 	Domain string `json:"domain" jsonschema:"Domain name to inspect, such as example.com"`
 }
 
-type Output map[string]any
+type IPLookupOutput struct {
+	IPs []synthientsdk.IP `json:"ips"`
+}
 
 type API interface {
-	Account(context.Context) (map[string]any, error)
-	LookupIP(context.Context, string) (map[string]any, error)
-	LookupIPs(context.Context, []string) (map[string]any, error)
-	LookupDomain(context.Context, string) (map[string]any, error)
+	Account(context.Context) (synthientsdk.Account, error)
+	LookupIP(context.Context, string) (synthientsdk.IP, error)
+	LookupIPs(context.Context, []string) ([]synthientsdk.IP, error)
+	LookupDomain(context.Context, string) (synthientsdk.Domain, error)
 }
 
 func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
@@ -50,136 +49,85 @@ func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
 	)
 
 	mcp.AddTool(server, tool(
-		"synthient_account",
+		"get_account",
 		"Get Synthient account",
 		"Return account ownership, granted API scopes, remaining lookup credits, and quota reset timing for the supplied Synthient API key.",
 		false,
 		emptyInputSchema(),
-		accountOutputSchema(),
-	), func(ctx context.Context, _ *mcp.CallToolRequest, _ EmptyInput) (*mcp.CallToolResult, Output, error) {
+	), func(ctx context.Context, _ *mcp.CallToolRequest, _ EmptyInput) (*mcp.CallToolResult, synthientsdk.Account, error) {
 		value, err := client.Account(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, synthientsdk.Account{}, err
 		}
-		return successResult("Account information retrieved; see structured content."), accountOutput(value), nil
+		return successResult(accountSummary(value)), value, nil
 	})
 
 	mcp.AddTool(server, tool(
-		"synthient_lookup_ip",
+		"lookup_ip",
 		"Look up IP intelligence",
-		"Enrich one IPv4 or IPv6 address with Synthient intelligence. A successful lookup consumes lookup credit.",
-		true,
-		ipInputSchema(),
-		ipOutputSchema(),
-	), func(ctx context.Context, _ *mcp.CallToolRequest, input IPInput) (*mcp.CallToolResult, Output, error) {
-		ip, err := normalizeIP(input.IP)
-		if err != nil {
-			return nil, nil, err
-		}
-		value, err := client.LookupIP(ctx, ip)
-		if err != nil {
-			return nil, nil, err
-		}
-		return successResult("IP intelligence retrieved; see structured content."), Output(value), nil
-	})
-
-	mcp.AddTool(server, tool(
-		"synthient_lookup_ips",
-		"Look up multiple IPs",
-		"Enrich 1 to 1,000 IPv4 or IPv6 addresses in one discounted Synthient batch lookup. Successful batch calls consume lookup credits; duplicates are preserved in the request.",
+		"Enrich 1 to 1,000 IPv4 or IPv6 addresses with Synthient intelligence. A successful lookup consumes lookup credit; multiple addresses use discounted batch billing.",
 		true,
 		ipsInputSchema(),
-		ipsOutputSchema(),
-	), func(ctx context.Context, _ *mcp.CallToolRequest, input IPsInput) (*mcp.CallToolResult, Output, error) {
+	), func(ctx context.Context, _ *mcp.CallToolRequest, input IPLookupInput) (*mcp.CallToolResult, IPLookupOutput, error) {
 		if len(input.IPs) < 1 || len(input.IPs) > 1000 {
-			return nil, nil, fmt.Errorf("ips must contain between 1 and 1000 entries")
+			return nil, IPLookupOutput{}, fmt.Errorf("ips must contain between 1 and 1000 entries")
 		}
 		ips := make([]string, len(input.IPs))
 		for index, item := range input.IPs {
 			ip, err := normalizeIP(item)
 			if err != nil {
-				return nil, nil, fmt.Errorf("ips[%d]: %w", index, err)
+				return nil, IPLookupOutput{}, fmt.Errorf("ips[%d]: %w", index, err)
 			}
 			ips[index] = ip
 		}
-		value, err := client.LookupIPs(ctx, ips)
-		if err != nil {
-			return nil, nil, err
+
+		var values []synthientsdk.IP
+		if len(ips) == 1 {
+			value, err := client.LookupIP(ctx, ips[0])
+			if err != nil {
+				return nil, IPLookupOutput{}, err
+			}
+			values = []synthientsdk.IP{value}
+		} else {
+			var err error
+			values, err = client.LookupIPs(ctx, ips)
+			if err != nil {
+				return nil, IPLookupOutput{}, err
+			}
 		}
-		return successResult("Batch IP intelligence retrieved; see structured content."), Output(value), nil
+		return successResult(ipSummary(values)), IPLookupOutput{IPs: values}, nil
 	})
 
 	mcp.AddTool(server, tool(
-		"synthient_lookup_domain",
+		"lookup_domain",
 		"Look up domain intelligence",
 		"Return Synthient Helios honeypot intelligence for a domain. A successful lookup consumes lookup credit.",
 		true,
 		domainInputSchema(),
-		domainOutputSchema(),
-	), func(ctx context.Context, _ *mcp.CallToolRequest, input DomainInput) (*mcp.CallToolResult, Output, error) {
+	), func(ctx context.Context, _ *mcp.CallToolRequest, input DomainInput) (*mcp.CallToolResult, synthientsdk.Domain, error) {
 		domain, err := normalizeDomain(input.Domain)
 		if err != nil {
-			return nil, nil, err
+			return nil, synthientsdk.Domain{}, err
 		}
 		value, err := client.LookupDomain(ctx, domain)
 		if err != nil {
-			return nil, nil, err
+			return nil, synthientsdk.Domain{}, err
 		}
-		return successResult("Domain intelligence retrieved; see structured content."), Output(value), nil
+		return successResult(domainSummary(value)), value, nil
 	})
 
 	return server
 }
 
-func accountOutput(value map[string]any) Output {
-	output := Output{}
-	for key, item := range value {
-		if sensitiveAccountField(key) {
-			continue
-		}
-		output[key] = sanitizeAccountValue(item)
-	}
-	return output
-}
-
-func sanitizeAccountValue(value any) any {
-	switch value := value.(type) {
-	case map[string]any:
-		return accountOutput(value)
-	case []any:
-		cleaned := make([]any, len(value))
-		for index, item := range value {
-			cleaned[index] = sanitizeAccountValue(item)
-		}
-		return cleaned
-	default:
-		return value
-	}
-}
-
-func sensitiveAccountField(key string) bool {
-	normalized := strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			return r
-		}
-		return -1
-	}, key)
-	return normalized == "apikey" || normalized == "authorization" || normalized == "accesstoken" || normalized == "token" || normalized == "secret"
-}
-
-func tool(name, title, description string, metered bool, inputSchema, outputSchema *jsonschema.Schema) *mcp.Tool {
+func tool(name, title, description string, metered bool, inputSchema *jsonschema.Schema) *mcp.Tool {
 	readOnly := !metered
 	destructive := metered
 	openWorld := true
 	return &mcp.Tool{
-		Name:         name,
-		Title:        title,
-		Description:  description,
-		InputSchema:  inputSchema,
-		OutputSchema: outputSchema,
+		Name:        name,
+		Title:       title,
+		Description: description,
+		InputSchema: inputSchema,
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    readOnly,
 			DestructiveHint: &destructive,
@@ -187,6 +135,37 @@ func tool(name, title, description string, metered bool, inputSchema, outputSche
 			OpenWorldHint:   &openWorld,
 		},
 	}
+}
+
+func accountSummary(account synthientsdk.Account) string {
+	identity := strings.TrimSpace(strings.Join([]string{account.FirstName, account.LastName}, " "))
+	if identity == "" {
+		identity = account.Email
+	}
+	organization := account.Organization.Name
+	if organization == "" {
+		organization = "no organization"
+	}
+	return fmt.Sprintf("Synthient account %s (%s): %d lookup credits remain; quota resets in %d seconds.", identity, organization, account.LookupQuota.Credits, account.LookupQuota.ResetsIn)
+}
+
+func ipSummary(ips []synthientsdk.IP) string {
+	if len(ips) != 1 {
+		return fmt.Sprintf("Retrieved Synthient intelligence for %d IP addresses.", len(ips))
+	}
+	ip := ips[0]
+	return fmt.Sprintf("%s: risk score %d, ASN %d, country %s.", ip.IP, ip.Intelligence.RiskScore, ip.Network.Asn, fallback(ip.Location.Country, "unknown"))
+}
+
+func domainSummary(domain synthientsdk.Domain) string {
+	return fmt.Sprintf("%s: status %s, %d events in the last 24 hours, %d unique IPs in the last 24 hours.", domain.Domain, fallback(domain.Status, "unknown"), domain.Stats.Events24H, domain.UniqueIPs.Value24H)
+}
+
+func fallback(value, replacement string) string {
+	if strings.TrimSpace(value) == "" {
+		return replacement
+	}
+	return value
 }
 
 func successResult(message string) *mcp.CallToolResult {
@@ -229,10 +208,6 @@ func emptyInputSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "object", AdditionalProperties: rejectSchema()}
 }
 
-func ipInputSchema() *jsonschema.Schema {
-	return objectInputSchema(map[string]*jsonschema.Schema{"ip": ipStringSchema()}, []string{"ip"})
-}
-
 func ipsInputSchema() *jsonschema.Schema {
 	minimum, maximum := 1, 1000
 	return objectInputSchema(map[string]*jsonschema.Schema{
@@ -254,43 +229,6 @@ func ipStringSchema() *jsonschema.Schema {
 
 func objectInputSchema(properties map[string]*jsonschema.Schema, required []string) *jsonschema.Schema {
 	return &jsonschema.Schema{Type: "object", Properties: properties, Required: required, AdditionalProperties: rejectSchema()}
-}
-
-func accountOutputSchema() *jsonschema.Schema {
-	return openObjectSchema(map[string]*jsonschema.Schema{
-		"first_name":   {Type: "string"},
-		"last_name":    {Type: "string"},
-		"email":        {Type: "string"},
-		"organization": openObjectSchema(nil),
-		"scopes":       {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
-		"lookup_quota": openObjectSchema(nil),
-	})
-}
-
-func ipOutputSchema() *jsonschema.Schema {
-	return openObjectSchema(map[string]*jsonschema.Schema{
-		"ip":           {Type: "string"},
-		"network":      openObjectSchema(nil),
-		"location":     openObjectSchema(nil),
-		"intelligence": openObjectSchema(nil),
-	})
-}
-
-func ipsOutputSchema() *jsonschema.Schema {
-	return openObjectSchema(map[string]*jsonschema.Schema{
-		"results": {Type: "array", Items: openObjectSchema(nil)},
-	})
-}
-
-func domainOutputSchema() *jsonschema.Schema {
-	return openObjectSchema(map[string]*jsonschema.Schema{
-		"type": {Type: "string"},
-		"data": openObjectSchema(nil),
-	})
-}
-
-func openObjectSchema(properties map[string]*jsonschema.Schema) *jsonschema.Schema {
-	return &jsonschema.Schema{Type: "object", Properties: properties, AdditionalProperties: &jsonschema.Schema{}}
 }
 
 func rejectSchema() *jsonschema.Schema {
