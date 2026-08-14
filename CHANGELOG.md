@@ -20,3 +20,4 @@ Notable changes are recorded here. This project follows semantic versioning.
 ### Delivery
 
 - Add CI, release verification, immutable build identity, stable-only `latest` tagging, dependency automation, a scratch runtime image, and hardened Docker Compose defaults.
+- Add an Apache-2.0 license and clarify that this is an independent community project.

@@ -2,6 +2,8 @@
 
 A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for the [Synthient](https://synthient.com/) intelligence API. It exposes account, IP, batch-IP, and Helios domain intelligence over stateless Streamable HTTP.
 
+This is an independent, community-maintained project. It is not an official Synthient product and is not affiliated with or endorsed by Synthient.
+
 The server uses the official MCP Go SDK and currently negotiates protocol `2026-07-28`. Every caller supplies its own Synthient API key; the service has no server-wide Synthient credential.
 
 ## Security model
@@ -160,3 +162,7 @@ git push origin v0.2.0
 Release jobs re-run all verification before publishing `linux/amd64` and `linux/arm64` images. Stable releases receive full, minor, major, and `latest` tags; prereleases receive only their full prerelease version. Runtime MCP metadata, User-Agent, health output, and image metadata share the injected version and commit. Published images include an SBOM and provenance, and the workflow reports the immutable image digest.
 
 The repository requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. See [SECURITY.md](SECURITY.md) for vulnerability and credential-handling guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for the change workflow.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
