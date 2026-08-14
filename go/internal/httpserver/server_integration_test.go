@@ -128,9 +128,14 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 		}
 	}
 	wantNames := []string{
+		"feed_snapshot_meta",
 		"get_account",
+		"grpc_schema",
+		"list_feed_snapshots",
+		"list_feed_streams",
 		"lookup_domain",
 		"lookup_ip",
+		"sample_stream",
 	}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("tools = %#v", names)
