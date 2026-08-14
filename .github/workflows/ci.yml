@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go ${{ matrix.go-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version:
+          - 1.25.x
+          - 1.26.x
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: go/go.sum
+
+      - name: Verify formatting and module files
+        run: make fmt-check tidy-check
+
+      - name: Vet, test, and build
+        run: make vet test build
+
+      - name: Static analysis
+        if: matrix.go-version == '1.26.x'
+        run: make staticcheck
+
+      - name: Race detector and coverage
+        if: matrix.go-version == '1.26.x'
+        run: make race cover
+
+      - name: Vulnerability scan
+        if: matrix.go-version == '1.26.x'
+        run: make vuln
+
+  container:
+    name: Container smoke test
+    needs: go
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate Dockerfile
+        run: make docker-check
+
+      - name: Build and smoke test image
+        run: make smoke

@@ -1,7 +1,11 @@
-.git
-.github
-.env
-*.log
-coverage
-go/synthient-mcp
-go/**/*_test.go
+# Keep the build context deny-by-default so local credentials and unrelated
+# workspace files can never be offered to a local or remote builder.
+**
+!Dockerfile
+!go/
+!go/go.mod
+!go/go.sum
+!go/cmd/
+!go/cmd/**
+!go/internal/
+!go/internal/**

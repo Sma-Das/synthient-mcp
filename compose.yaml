@@ -2,13 +2,36 @@ services:
   synthient-mcp:
     build:
       context: .
+      args:
+        VERSION: "${VERSION:-dev}"
+        COMMIT: "${COMMIT:-unknown}"
+        BUILD_DATE: "${BUILD_DATE:-unknown}"
     image: synthient-mcp-go:local
     init: true
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PUBLISHED_HOST:-127.0.0.1}:${PUBLISHED_PORT:-3000}:${APP_PORT:-3000}"
     environment:
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "${APP_PORT:-3000}"
       ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}"
-      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-localhost,127.0.0.1,[::1]}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
       TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-0}"
+      TRUSTED_PROXY_CIDRS: "${TRUSTED_PROXY_CIDRS:-}"
       REQUEST_TIMEOUT_MS: "${REQUEST_TIMEOUT_MS:-15000}"
+      READ_TIMEOUT_MS: "${READ_TIMEOUT_MS:-}"
+      WRITE_TIMEOUT_MS: "${WRITE_TIMEOUT_MS:-}"
+      IDLE_TIMEOUT_MS: "${IDLE_TIMEOUT_MS:-60000}"
+      SHUTDOWN_TIMEOUT_MS: "${SHUTDOWN_TIMEOUT_MS:-10000}"
+      MAX_HEADER_BYTES: "${MAX_HEADER_BYTES:-32768}"
+      MAX_CONCURRENT_REQUESTS: "${MAX_CONCURRENT_REQUESTS:-8}"
+      METRICS_ENABLED: "${METRICS_ENABLED:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      LOG_FORMAT: "${LOG_FORMAT:-text}"
+      SYNTHIENT_API_BASE_URL: "${SYNTHIENT_API_BASE_URL:-https://api.synthient.com/api/v4/}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
     restart: unless-stopped

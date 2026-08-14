@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func (transport headerTransport) RoundTrip(request *http.Request) (*http.Respons
 }
 
 func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
-	seen := make(chan observedRequest, 2)
+	seen := make(chan observedRequest, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		seen <- observedRequest{
 			Method:       request.Method,
@@ -61,6 +62,14 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 			})
 			return
 		}
+		if request.URL.Path == "/api/v4/lookup/ips" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"results": []any{map[string]any{"ip": "8.8.8.8"}}})
+			return
+		}
+		if request.URL.Path == "/api/v4/lookup/domain/example.com" {
+			_ = json.NewEncoder(response).Encode(map[string]any{"type": "domain", "data": map[string]any{"domain": "example.com"}})
+			return
+		}
 		_ = json.NewEncoder(response).Encode(map[string]any{
 			"ip":           "8.8.8.8",
 			"intelligence": map[string]any{"risk_score": 0},
@@ -74,7 +83,7 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 	}
 	cfg := config.Config{
 		AllowedHosts:     []string{"127.0.0.1"},
-		AllowedOrigins:   []string{"127.0.0.1"},
+		AllowedOrigins:   []string{"http://127.0.0.1"},
 		TrustProxyHops:   0,
 		SynthientBaseURL: baseURL,
 		RequestTimeout:   time.Second,
@@ -147,6 +156,27 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 	if _, exists := accountOutput["api_key"]; exists {
 		t.Fatal("account tool exposed upstream api_key")
 	}
+	batchResult, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "synthient_lookup_ips",
+		Arguments: map[string]any{"ips": []string{"8.8.8.8", "2001:0db8::1"}},
+	})
+	if err != nil || batchResult.IsError {
+		t.Fatalf("batch result=%#v error=%v", batchResult, err)
+	}
+	domainResult, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "synthient_lookup_domain",
+		Arguments: map[string]any{"domain": "Example.COM."},
+	})
+	if err != nil || domainResult.IsError {
+		t.Fatalf("domain result=%#v error=%v", domainResult, err)
+	}
+	invalidResult, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "synthient_lookup_ip",
+		Arguments: map[string]any{"ip": "../../account/me"},
+	})
+	if err != nil || !invalidResult.IsError {
+		t.Fatalf("invalid input result=%#v error=%v", invalidResult, err)
+	}
 
 	request := <-seen
 	wantRequest := observedRequest{
@@ -162,13 +192,26 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 	if accountRequest.APIKey != "caller-key-is-preserved" || accountRequest.ForwardedFor != "127.0.0.1" {
 		t.Fatalf("account upstream request = %#v", accountRequest)
 	}
+	batchRequest := <-seen
+	if batchRequest.Method != http.MethodPost || batchRequest.Path != "/api/v4/lookup/ips" {
+		t.Fatalf("batch upstream request = %#v", batchRequest)
+	}
+	domainRequest := <-seen
+	if domainRequest.Method != http.MethodGet || domainRequest.Path != "/api/v4/lookup/domain/example.com" {
+		t.Fatalf("domain upstream request = %#v", domainRequest)
+	}
+	select {
+	case unexpected := <-seen:
+		t.Fatalf("invalid input reached upstream: %#v", unexpected)
+	default:
+	}
 }
 
 func TestMCPServerRejectsMissingCredential(t *testing.T) {
 	baseURL, _ := url.Parse("http://127.0.0.1:1/api/v4/")
 	cfg := config.Config{
 		AllowedHosts:     []string{"example.com"},
-		AllowedOrigins:   []string{"example.com"},
+		AllowedOrigins:   []string{"https://example.com"},
 		SynthientBaseURL: baseURL,
 		RequestTimeout:   time.Second,
 		MaxRequestBody:   1 << 20,
@@ -186,7 +229,7 @@ func TestMCPServerRejectsDisallowedOrigin(t *testing.T) {
 	baseURL, _ := url.Parse("http://127.0.0.1:1/api/v4/")
 	cfg := config.Config{
 		AllowedHosts:     []string{"example.com"},
-		AllowedOrigins:   []string{"example.com"},
+		AllowedOrigins:   []string{"https://example.com"},
 		SynthientBaseURL: baseURL,
 		RequestTimeout:   time.Second,
 		MaxRequestBody:   1 << 20,
@@ -198,6 +241,117 @@ func TestMCPServerRejectsDisallowedOrigin(t *testing.T) {
 
 	NewHandler(cfg).ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPServerRejectsDisallowedHost(t *testing.T) {
+	cfg := config.Config{AllowedHosts: []string{"example.com"}}
+	request := httptest.NewRequest(http.MethodPost, "http://evil.example/mcp", nil)
+	request.Header.Set("X-API-Key", "key")
+	response := httptest.NewRecorder()
+
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPServerRequiresExactTrustedOrigin(t *testing.T) {
+	cfg := config.Config{
+		AllowedHosts:   []string{"service.example"},
+		AllowedOrigins: []string{"https://app.example:8443"},
+	}
+	for _, origin := range []string{"https://app.example", "http://app.example:8443", "https://app.example:9443"} {
+		request := httptest.NewRequest(http.MethodPost, "https://service.example/mcp", nil)
+		request.Header.Set("Origin", origin)
+		request.Header.Set("X-API-Key", "key")
+		response := httptest.NewRecorder()
+
+		NewHandler(cfg).ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("origin %q status = %d; body = %s", origin, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestMCPServerRequiresExactSameHostOrigin(t *testing.T) {
+	cfg := config.Config{AllowedHosts: []string{"service.example"}}
+	request := httptest.NewRequest(http.MethodPost, "https://service.example/mcp", nil)
+	request.Header.Set("Origin", "https://service.example:8443")
+	request.Header.Set("X-API-Key", "key")
+	response := httptest.NewRecorder()
+
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMCPServerRejectsAmbiguousCredentialHeader(t *testing.T) {
+	cfg := config.Config{AllowedHosts: []string{"example.com"}}
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+	request.Header["X-Api-Key"] = []string{"first", "second"}
+	response := httptest.NewRecorder()
+
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHealthAndMetricsAreSecretSafeAndNonCacheable(t *testing.T) {
+	cfg := config.Config{MetricsEnabled: true}
+	handler := NewHandler(cfg)
+	for _, path := range []string{"/healthz", "/metrics"} {
+		request := httptest.NewRequest(http.MethodGet, "http://example.com"+path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s status=%d cache=%q", path, response.Code, response.Header().Get("Cache-Control"))
+		}
+		if strings.Contains(response.Body.String(), "X-API-Key") {
+			t.Errorf("%s exposed credential metadata", path)
+		}
+	}
+}
+
+func TestConcurrentLimitFailsFast(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	limited := limitConcurrent(1, &telemetry{}, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	firstDone := make(chan struct{})
+	go func() {
+		limited.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil))
+		close(firstDone)
+	}()
+	<-started
+	second := httptest.NewRecorder()
+	limited.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil))
+	if second.Code != http.StatusServiceUnavailable || second.Header().Get("Retry-After") == "" {
+		t.Fatalf("status=%d headers=%v", second.Code, second.Header())
+	}
+	close(release)
+	<-firstDone
+}
+
+func TestMCPServerRejectsOversizedBody(t *testing.T) {
+	cfg := config.Config{
+		AllowedHosts:   []string{"example.com"},
+		MaxRequestBody: 64,
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", strings.NewReader(strings.Repeat("x", 65)))
+	request.Header.Set("X-API-Key", "key")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	response := httptest.NewRecorder()
+
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
 	}
 }
