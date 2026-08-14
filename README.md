@@ -72,12 +72,11 @@ Environment-variable expansion is performed by the MCP client. If the client doe
 
 | Tool | Synthient endpoint | Behavior |
 | --- | --- | --- |
-| `synthient_account` | `GET /api/v4/account/me` | Reads account ownership, scopes, credits, and reset timing; credential fields are omitted |
-| `synthient_lookup_ip` | `GET /api/v4/lookup/ip/{ip}` | Enriches one validated IPv4 or IPv6 address and consumes lookup credit |
-| `synthient_lookup_ips` | `POST /api/v4/lookup/ips` | Enriches 1–1,000 validated addresses using Synthient's discounted batch billing |
-| `synthient_lookup_domain` | `GET /api/v4/lookup/domain/{domain}` | Retrieves Helios domain intelligence and consumes lookup credit |
+| `get_account` | `GET /api/v4/account/me` | Reads account ownership, scopes, credits, and reset timing; credential fields are omitted |
+| `lookup_ip` | `GET /api/v4/lookup/ip/{ip}` or `POST /api/v4/lookup/ips` | Enriches 1–1,000 validated addresses, using discounted batch billing for multiple addresses |
+| `lookup_domain` | `GET /api/v4/lookup/domain/{domain}` | Retrieves Helios domain intelligence and consumes lookup credit |
 
-Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. Results include structured content plus a short text summary rather than a duplicate full JSON document.
+Tool names and response shapes follow Synthient's official MCP contract. Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. Results use the official typed Synthient SDK models and include structured content plus a useful short text summary.
 
 ## Configuration
 

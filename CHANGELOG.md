@@ -16,6 +16,12 @@ Notable changes are recorded here. This project follows semantic versioning.
 
 - Await graceful shutdown and bound headers, complete requests, upstream calls, and concurrency.
 - Add secret-safe request telemetry, health build identity, and optional bounded metrics.
+- Use the official typed Synthient SDK contracts and current flat domain response model.
+
+### Changed
+
+- Align account, IP, and domain tool names and response shapes with Synthient's official MCP server.
+- Combine single and batch IP enrichment in `lookup_ip` and return useful text summaries alongside structured output.
 
 ### Delivery
 
