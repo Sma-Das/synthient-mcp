@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Sma-Das/synthient-mcp/go/internal/config"
@@ -25,6 +27,16 @@ type observedRequest struct {
 
 type headerTransport struct {
 	base http.RoundTripper
+}
+
+type bearerTransport struct {
+	base http.RoundTripper
+}
+
+func (transport bearerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	clone := request.Clone(request.Context())
+	clone.Header.Set("Authorization", "Bearer mcp-access-token")
+	return transport.base.RoundTrip(clone)
 }
 
 func TestRootDoesNotServeALandingPage(t *testing.T) {
@@ -87,6 +99,7 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 		AllowedHosts:     []string{"127.0.0.1"},
 		AllowedOrigins:   []string{"http://127.0.0.1"},
 		TrustProxyHops:   0,
+		ForwardClientIP:  true,
 		SynthientBaseURL: baseURL,
 		RequestTimeout:   time.Second,
 		MaxRequestBody:   1 << 20,
@@ -373,4 +386,156 @@ func TestMCPServerRejectsOversizedBody(t *testing.T) {
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d; body = %s", response.Code, response.Body.String())
 	}
+}
+
+func TestOAuthModeUsesSeparateServerCredentialAndPublishesMetadata(t *testing.T) {
+	seen := make(chan observedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		seen <- observedRequest{Method: request.Method, Path: request.URL.Path, APIKey: request.Header.Get("X-API-Key"), ForwardedFor: request.Header.Get("X-Forwarded-For")}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"email":         "oauth@example.com",
+			"organization":  map[string]any{"name": "OAuth Org"},
+			"lookup_quota":  map[string]any{"credits": 20, "resets_in": 60},
+			"access_token":  "must-be-removed",
+			"authorization": "must-be-removed",
+		})
+	}))
+	defer upstream.Close()
+	baseURL, _ := url.Parse(upstream.URL + "/api/v4/")
+	cfg := config.Config{
+		AllowedHosts:          []string{"127.0.0.1"},
+		SynthientBaseURL:      baseURL,
+		SynthientGRPCEndpoint: "grpc.synthient.com:443",
+		SynthientAPIKey:       "server-synthient-key",
+		AuthMode:              "oauth",
+		OAuthIssuerURL:        "https://id.example.com/",
+		OAuthJWKSURL:          "https://id.example.com/jwks.json",
+		OAuthAudience:         "http://127.0.0.1/mcp",
+		MCPResourceURL:        "http://127.0.0.1/mcp",
+		OAuthRequiredScopes:   []string{"mcp:tools"},
+		RequestTimeout:        time.Second,
+		MaxConcurrentRequests: 8,
+		MaxConcurrentPerUser:  2,
+		MaxRequestBody:        1 << 20,
+	}
+	verifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		if token != "mcp-access-token" {
+			return nil, fmt.Errorf("%w: unexpected token", auth.ErrInvalidToken)
+		}
+		return &auth.TokenInfo{UserID: "user-123", Scopes: []string{"mcp:tools"}, Expiration: time.Now().Add(time.Hour)}, nil
+	}
+	mcpHTTP := httptest.NewServer(newHandler(cfg, nil, verifier))
+	defer mcpHTTP.Close()
+
+	metadataResponse, err := http.Get(mcpHTTP.URL + "/.well-known/oauth-protected-resource/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metadataResponse.Body.Close()
+	if metadataResponse.StatusCode != http.StatusOK || metadataResponse.Header.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("metadata status=%d headers=%v", metadataResponse.StatusCode, metadataResponse.Header)
+	}
+
+	unauthorized, err := http.Post(mcpHTTP.URL+"/mcp", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unauthorized.StatusCode != http.StatusUnauthorized || !strings.Contains(unauthorized.Header.Get("WWW-Authenticate"), "oauth-protected-resource/mcp") {
+		t.Fatalf("unauthorized status=%d authenticate=%q", unauthorized.StatusCode, unauthorized.Header.Get("WWW-Authenticate"))
+	}
+	_ = unauthorized.Body.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "oauth-test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{
+		Endpoint:             mcpHTTP.URL + "/mcp",
+		HTTPClient:           &http.Client{Transport: bearerTransport{base: http.DefaultTransport}},
+		DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_account"})
+	if err != nil || result.IsError {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	request := <-seen
+	if request.APIKey != "server-synthient-key" || request.ForwardedFor != "" {
+		t.Fatalf("upstream request = %#v", request)
+	}
+}
+
+func TestCORSPreflightIsExactAndCredentialFree(t *testing.T) {
+	cfg := config.Config{AllowedHosts: []string{"service.example"}, AllowedOrigins: []string{"https://app.example"}, CORSEnabled: true}
+	request := httptest.NewRequest(http.MethodOptions, "https://service.example/mcp", nil)
+	request.Header.Set("Origin", "https://app.example")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	response := httptest.NewRecorder()
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "https://app.example" {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodOptions, "https://service.example/mcp", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	response = httptest.NewRecorder()
+	NewHandler(cfg).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("disallowed status=%d", response.Code)
+	}
+}
+
+func TestClientIPForwardingIsDisabledByDefault(t *testing.T) {
+	called := false
+	handler := protectMCP(config.Config{AllowedHosts: []string{"example.com"}}, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		called = true
+		if request.Header.Get("X-Forwarded-For") != "" {
+			t.Fatalf("forwarded client IP = %q", request.Header.Get("X-Forwarded-For"))
+		}
+	}))
+	request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+	request.Header.Set("X-API-Key", "key")
+	request.Header.Set("X-Forwarded-For", "198.51.100.10")
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if !called {
+		t.Fatal("handler was not called")
+	}
+}
+
+func TestConcurrentLimitIsPerPrincipal(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	limited := limitConcurrentPerPrincipal(1, &telemetry{}, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-API-Key") == "first" {
+			close(started)
+			<-release
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	firstDone := make(chan struct{})
+	go func() {
+		request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		request.Header.Set("X-API-Key", "first")
+		limited.ServeHTTP(httptest.NewRecorder(), request)
+		close(firstDone)
+	}()
+	<-started
+
+	second := httptest.NewRecorder()
+	secondRequest := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+	secondRequest.Header.Set("X-API-Key", "first")
+	limited.ServeHTTP(second, secondRequest)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("same principal status=%d", second.Code)
+	}
+
+	other := httptest.NewRecorder()
+	otherRequest := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+	otherRequest.Header.Set("X-API-Key", "second")
+	limited.ServeHTTP(other, otherRequest)
+	if other.Code != http.StatusNoContent {
+		t.Fatalf("other principal status=%d", other.Code)
+	}
+	close(release)
+	<-firstDone
 }

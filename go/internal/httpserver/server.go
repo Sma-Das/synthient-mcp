@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,9 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Sma-Das/synthient-mcp/go/internal/buildinfo"
@@ -27,6 +30,7 @@ type telemetry struct {
 	httpRequests          atomic.Int64
 	httpInflight          atomic.Int64
 	httpRejected          atomic.Int64
+	httpPrincipalRejected atomic.Int64
 	upstreamRequests      atomic.Int64
 	upstreamTransport     atomic.Int64
 	upstreamSuccess       atomic.Int64
@@ -41,6 +45,10 @@ func NewHandler(cfg config.Config) http.Handler {
 }
 
 func NewHandlerWithLogger(cfg config.Config, logger *slog.Logger) http.Handler {
+	return newHandler(cfg, logger, nil)
+}
+
+func newHandler(cfg config.Config, logger *slog.Logger, verifier auth.TokenVerifier) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -69,9 +77,13 @@ func NewHandlerWithLogger(cfg config.Config, logger *slog.Logger) http.Handler {
 	schemaCache := mcp.NewSchemaCache()
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(request *http.Request) *mcp.Server {
+			apiKey := request.Header.Get("X-API-Key")
+			if cfg.AuthMode == "oauth" {
+				apiKey = cfg.SynthientAPIKey
+			}
 			client := synthient.NewClient(
 				cfg.SynthientBaseURL,
-				request.Header.Get("X-API-Key"),
+				apiKey,
 				request.Header.Get("X-Forwarded-For"),
 				apiClient,
 				stats,
@@ -96,10 +108,24 @@ func NewHandlerWithLogger(cfg config.Config, logger *slog.Logger) http.Handler {
 		writeError(response, http.StatusForbidden, "Origin header is not allowed")
 	}))
 
-	mcpRoute := limitConcurrent(maxConcurrent, stats, mcpHandler)
+	perPrincipal := cfg.MaxConcurrentPerUser
+	if perPrincipal <= 0 {
+		perPrincipal = 2
+	}
+	mcpRoute := limitConcurrentPerPrincipal(perPrincipal, stats, mcpHandler)
 	mcpRoute = protectMCP(cfg, mcpRoute)
+	if cfg.AuthMode == "oauth" {
+		if verifier == nil {
+			verifier = oidcTokenVerifier(cfg)
+		}
+		mcpRoute = oauthProtection(cfg, verifier)(mcpRoute)
+	}
+	mcpRoute = limitConcurrent(maxConcurrent, stats, mcpRoute)
 	mcpRoute = requireExactOrigin(cfg.AllowedOrigins, mcpRoute)
 	mcpRoute = crossOrigin.Handler(mcpRoute)
+	if cfg.CORSEnabled {
+		mcpRoute = allowCORS(cfg, mcpRoute)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
@@ -113,6 +139,14 @@ func NewHandlerWithLogger(cfg config.Config, logger *slog.Logger) http.Handler {
 	})
 	if cfg.MetricsEnabled {
 		mux.Handle("GET /metrics", stats)
+	}
+	if cfg.AuthMode == "oauth" {
+		metadata := protectedResourceHandler(cfg)
+		metadataPath := resourceMetadataPath(cfg.MCPResourceURL)
+		mux.Handle(metadataPath, metadata)
+		if metadataPath != "/.well-known/oauth-protected-resource" {
+			mux.Handle("/.well-known/oauth-protected-resource", metadata)
+		}
 	}
 	mux.Handle("/mcp", mcpRoute)
 	return observeRequests(logger, stats, mux)
@@ -161,28 +195,111 @@ func protectMCP(cfg config.Config, next http.Handler) http.Handler {
 			return
 		}
 
-		keys := request.Header.Values("X-API-Key")
-		if len(keys) == 0 || strings.TrimSpace(keys[0]) == "" {
-			writeError(response, http.StatusUnauthorized, "Provide your Synthient API key in the x-api-key header.")
-			return
-		}
-		maxKeyLength := cfg.MaxAPIKeyLength
-		if maxKeyLength <= 0 {
-			maxKeyLength = 1024
-		}
-		if len(keys) != 1 || keys[0] != strings.TrimSpace(keys[0]) || strings.Contains(keys[0], ",") || len(keys[0]) > maxKeyLength {
-			writeError(response, http.StatusBadRequest, "The x-api-key header must contain one bounded value without surrounding whitespace.")
-			return
+		if cfg.AuthMode != "oauth" {
+			keys := request.Header.Values("X-API-Key")
+			if len(keys) == 0 || strings.TrimSpace(keys[0]) == "" {
+				writeError(response, http.StatusUnauthorized, "Provide your Synthient API key in the x-api-key header.")
+				return
+			}
+			maxKeyLength := cfg.MaxAPIKeyLength
+			if maxKeyLength <= 0 {
+				maxKeyLength = 1024
+			}
+			if len(keys) != 1 || keys[0] != strings.TrimSpace(keys[0]) || strings.Contains(keys[0], ",") || len(keys[0]) > maxKeyLength {
+				writeError(response, http.StatusBadRequest, "The x-api-key header must contain one bounded value without surrounding whitespace.")
+				return
+			}
+		} else {
+			request.Header.Del("X-API-Key")
 		}
 
-		clientIP, err := forwarding.CanonicalClientIP(request, cfg.TrustProxyHops, cfg.TrustedProxyCIDRs)
-		if err != nil {
-			writeError(response, http.StatusBadRequest, err.Error())
-			return
+		request.Header.Del("X-Forwarded-For")
+		if cfg.ForwardClientIP {
+			clientIP, err := forwarding.CanonicalClientIP(request, cfg.TrustProxyHops, cfg.TrustedProxyCIDRs)
+			if err != nil {
+				writeError(response, http.StatusBadRequest, err.Error())
+				return
+			}
+			request.Header.Set("X-Forwarded-For", clientIP)
 		}
-		request.Header.Set("X-Forwarded-For", clientIP)
 		next.ServeHTTP(response, request)
 	})
+}
+
+func limitConcurrentPerPrincipal(limit int, stats *telemetry, next http.Handler) http.Handler {
+	var mutex sync.Mutex
+	inflight := map[string]int{}
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		principal := requestPrincipal(request)
+		if principal == "" {
+			writeError(response, http.StatusUnauthorized, "Unable to identify the authenticated principal.")
+			return
+		}
+		mutex.Lock()
+		if inflight[principal] >= limit {
+			mutex.Unlock()
+			stats.httpPrincipalRejected.Add(1)
+			response.Header().Set("Retry-After", "1")
+			writeError(response, http.StatusTooManyRequests, "The authenticated principal is at its concurrent request limit.")
+			return
+		}
+		inflight[principal]++
+		mutex.Unlock()
+		defer func() {
+			mutex.Lock()
+			inflight[principal]--
+			if inflight[principal] == 0 {
+				delete(inflight, principal)
+			}
+			mutex.Unlock()
+		}()
+		next.ServeHTTP(response, request)
+	})
+}
+
+func requestPrincipal(request *http.Request) string {
+	if token := auth.TokenInfoFromContext(request.Context()); token != nil && token.UserID != "" {
+		return "oauth:" + token.UserID
+	}
+	if key := request.Header.Get("X-API-Key"); key != "" {
+		digest := sha256.Sum256([]byte(key))
+		return "api-key:" + hex.EncodeToString(digest[:])
+	}
+	return ""
+}
+
+func allowCORS(cfg config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		origin := canonicalOriginHeader(request.Header.Get("Origin"))
+		if origin == "" {
+			next.ServeHTTP(response, request)
+			return
+		}
+		if !stringInSlice(cfg.AllowedOrigins, origin) || !allowedRequestHost(request.Host, cfg.AllowedHosts) {
+			writeError(response, http.StatusForbidden, "Origin header is not allowed")
+			return
+		}
+		response.Header().Set("Access-Control-Allow-Origin", origin)
+		response.Header().Set("Access-Control-Allow-Credentials", "true")
+		response.Header().Set("Access-Control-Expose-Headers", "Mcp-Session-Id, X-Request-ID")
+		response.Header().Add("Vary", "Origin")
+		if request.Method == http.MethodOptions {
+			response.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			response.Header().Set("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID")
+			response.Header().Set("Access-Control-Max-Age", "600")
+			response.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
+}
+
+func canonicalOriginHeader(value string) string {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed == nil || parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
+	}
+	return (&url.URL{Scheme: strings.ToLower(parsed.Scheme), Host: strings.ToLower(parsed.Host)}).String()
 }
 
 func limitConcurrent(limit int, stats *telemetry, next http.Handler) http.Handler {
@@ -317,6 +434,7 @@ func (stats *telemetry) ServeHTTP(response http.ResponseWriter, _ *http.Request)
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_requests_total counter\nsynthient_mcp_http_requests_total %d\n", stats.httpRequests.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_inflight gauge\nsynthient_mcp_http_inflight %d\n", stats.httpInflight.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_rejected_total counter\nsynthient_mcp_http_rejected_total %d\n", stats.httpRejected.Load())
+	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_principal_rejected_total counter\nsynthient_mcp_http_principal_rejected_total %d\n", stats.httpPrincipalRejected.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_upstream_requests_total counter\nsynthient_mcp_upstream_requests_total %d\n", stats.upstreamRequests.Load())
 	_, _ = fmt.Fprintln(response, "# TYPE synthient_mcp_upstream_requests_by_outcome counter")
 	_, _ = fmt.Fprintf(response, "synthient_mcp_upstream_requests_by_outcome{outcome=\"success\"} %d\n", stats.upstreamSuccess.Load())

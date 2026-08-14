@@ -132,7 +132,9 @@ func (c *Client) newRequest(ctx context.Context, method string, path []string) (
 	}
 	request.Header.Set("Accept", "application/x-ndjson, application/json")
 	request.Header.Set("X-API-Key", c.apiKey)
-	request.Header.Set("X-Forwarded-For", c.forwardedFor)
+	if c.forwardedFor != "" {
+		request.Header.Set("X-Forwarded-For", c.forwardedFor)
+	}
 	return request, nil
 }
 

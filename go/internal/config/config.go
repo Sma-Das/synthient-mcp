@@ -23,6 +23,15 @@ type Config struct {
 	TrustedProxyCIDRs     []netip.Prefix
 	SynthientBaseURL      *url.URL
 	SynthientGRPCEndpoint string
+	SynthientAPIKey       string
+	AuthMode              string
+	OAuthIssuerURL        string
+	OAuthJWKSURL          string
+	OAuthAudience         string
+	MCPResourceURL        string
+	OAuthRequiredScopes   []string
+	ForwardClientIP       bool
+	CORSEnabled           bool
 	RequestTimeout        time.Duration
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
@@ -31,6 +40,7 @@ type Config struct {
 	MaxRequestBody        int64
 	MaxHeaderBytes        int
 	MaxConcurrentRequests int
+	MaxConcurrentPerUser  int
 	MaxAPIKeyLength       int
 	MetricsEnabled        bool
 	LogLevel              slog.Level
@@ -103,6 +113,24 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	maxConcurrentPerUser, err := integer(lookup, "MAX_CONCURRENT_PER_PRINCIPAL", 2, 1, 1024)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxConcurrentPerUser > maxConcurrentRequests {
+		return Config{}, fmt.Errorf("MAX_CONCURRENT_PER_PRINCIPAL must not exceed MAX_CONCURRENT_REQUESTS")
+	}
+	forwardClientIP, err := boolean(lookup, "FORWARD_CLIENT_IP", false)
+	if err != nil {
+		return Config{}, err
+	}
+	corsEnabled, err := boolean(lookup, "CORS_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	if corsEnabled && len(allowedOrigins) == 0 {
+		return Config{}, fmt.Errorf("ALLOWED_ORIGINS is required when CORS_ENABLED is true")
+	}
 
 	baseURL, err := url.Parse(get(lookup, "SYNTHIENT_API_BASE_URL", "https://api.synthient.com/api/v4/"))
 	if err != nil {
@@ -117,6 +145,39 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	grpcEndpoint := strings.TrimSpace(get(lookup, "SYNTHIENT_GRPC_ENDPOINT", "grpc.synthient.com:443"))
 	if err := validateGRPCEndpoint(grpcEndpoint); err != nil {
 		return Config{}, err
+	}
+
+	authMode := strings.ToLower(strings.TrimSpace(get(lookup, "AUTH_MODE", "api_key")))
+	if authMode != "api_key" && authMode != "oauth" {
+		return Config{}, fmt.Errorf("AUTH_MODE must be api_key or oauth")
+	}
+	var synthientAPIKey, oauthIssuerURL, oauthJWKSURL, oauthAudience, mcpResourceURL string
+	var oauthRequiredScopes []string
+	if authMode == "oauth" {
+		synthientAPIKey = strings.TrimSpace(get(lookup, "SYNTHIENT_API_KEY", ""))
+		if synthientAPIKey == "" || len(synthientAPIKey) > 1024 {
+			return Config{}, fmt.Errorf("SYNTHIENT_API_KEY must contain a bounded server credential in oauth mode")
+		}
+		oauthIssuerURL = strings.TrimSpace(get(lookup, "OAUTH_ISSUER_URL", ""))
+		oauthJWKSURL = strings.TrimSpace(get(lookup, "OAUTH_JWKS_URL", ""))
+		oauthAudience = strings.TrimSpace(get(lookup, "OAUTH_AUDIENCE", ""))
+		mcpResourceURL = strings.TrimSpace(get(lookup, "MCP_RESOURCE_URL", ""))
+		for name, value := range map[string]string{
+			"OAUTH_ISSUER_URL": oauthIssuerURL,
+			"OAUTH_JWKS_URL":   oauthJWKSURL,
+			"MCP_RESOURCE_URL": mcpResourceURL,
+		} {
+			if err := validateSecureURL(name, value); err != nil {
+				return Config{}, err
+			}
+		}
+		if oauthAudience == "" || len(oauthAudience) > 2048 {
+			return Config{}, fmt.Errorf("OAUTH_AUDIENCE is required in oauth mode and must not exceed 2048 characters")
+		}
+		oauthRequiredScopes, err = scopeList(get(lookup, "OAUTH_REQUIRED_SCOPES", "mcp:tools"))
+		if err != nil {
+			return Config{}, err
+		}
 	}
 
 	logLevel, err := parseLogLevel(get(lookup, "LOG_LEVEL", "info"))
@@ -137,6 +198,15 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		TrustedProxyCIDRs:     trustedProxyCIDRs,
 		SynthientBaseURL:      baseURL,
 		SynthientGRPCEndpoint: grpcEndpoint,
+		SynthientAPIKey:       synthientAPIKey,
+		AuthMode:              authMode,
+		OAuthIssuerURL:        oauthIssuerURL,
+		OAuthJWKSURL:          oauthJWKSURL,
+		OAuthAudience:         oauthAudience,
+		MCPResourceURL:        mcpResourceURL,
+		OAuthRequiredScopes:   oauthRequiredScopes,
+		ForwardClientIP:       forwardClientIP,
+		CORSEnabled:           corsEnabled,
 		RequestTimeout:        time.Duration(timeoutMS) * time.Millisecond,
 		ReadTimeout:           time.Duration(readTimeoutMS) * time.Millisecond,
 		WriteTimeout:          time.Duration(writeTimeoutMS) * time.Millisecond,
@@ -145,11 +215,41 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		MaxRequestBody:        1 << 20,
 		MaxHeaderBytes:        maxHeaderBytes,
 		MaxConcurrentRequests: maxConcurrentRequests,
+		MaxConcurrentPerUser:  maxConcurrentPerUser,
 		MaxAPIKeyLength:       1024,
 		MetricsEnabled:        metricsEnabled,
 		LogLevel:              logLevel,
 		LogJSON:               logFormat == "json",
 	}, nil
+}
+
+func validateSecureURL(name, value string) error {
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed == nil || !parsed.IsAbs() || parsed.Hostname() == "" {
+		return fmt.Errorf("%s must be an absolute HTTPS URL", name)
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+		return fmt.Errorf("%s must use HTTPS unless it targets localhost", name)
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return fmt.Errorf("%s must not contain credentials, a query, fragment, or opaque data", name)
+	}
+	return nil
+}
+
+func scopeList(value string) ([]string, error) {
+	var scopes []string
+	for scope := range strings.SplitSeq(value, ",") {
+		scope = strings.TrimSpace(scope)
+		if scope == "" || len(scope) > 128 || strings.ContainsAny(scope, " \t\r\n\"") {
+			return nil, fmt.Errorf("OAUTH_REQUIRED_SCOPES must contain comma-separated scope tokens")
+		}
+		scopes = append(scopes, scope)
+	}
+	if len(scopes) == 0 || len(scopes) > 20 {
+		return nil, fmt.Errorf("OAUTH_REQUIRED_SCOPES must contain between 1 and 20 scopes")
+	}
+	return scopes, nil
 }
 
 func validateGRPCEndpoint(value string) error {

@@ -151,7 +151,9 @@ func (c *Client) requestQuery(ctx context.Context, method string, path []string,
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", buildinfo.UserAgent())
 	request.Header.Set("X-API-Key", c.apiKey)
-	request.Header.Set("X-Forwarded-For", c.forwardedFor)
+	if c.forwardedFor != "" {
+		request.Header.Set("X-Forwarded-For", c.forwardedFor)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
