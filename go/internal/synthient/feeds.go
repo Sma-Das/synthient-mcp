@@ -60,7 +60,7 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		c.observe(0, time.Since(started))
-		return nil, false, fmt.Errorf("Synthient stream request failed: %w", err)
+		return nil, false, fmt.Errorf("synthient stream request failed: %w", err)
 	}
 	defer func() { c.observe(response.StatusCode, time.Since(started)) }()
 	defer response.Body.Close()
@@ -112,19 +112,19 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 
 func (c *Client) newRequest(ctx context.Context, method string, path []string) (*http.Request, error) {
 	if c.baseURL == nil || c.httpClient == nil {
-		return nil, fmt.Errorf("Synthient API client is not configured")
+		return nil, fmt.Errorf("synthient API client is not configured")
 	}
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/")
 	for _, segment := range path {
 		if segment == "" {
-			return nil, fmt.Errorf("Synthient API path segment cannot be empty")
+			return nil, fmt.Errorf("synthient API path segment cannot be empty")
 		}
 		endpoint = *endpoint.JoinPath(url.PathEscape(segment))
 	}
 	basePrefix := strings.TrimSuffix(c.baseURL.EscapedPath(), "/") + "/"
 	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
-		return nil, fmt.Errorf("Synthient API path escaped the configured endpoint")
+		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), nil)
 	if err != nil {

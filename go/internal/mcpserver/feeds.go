@@ -265,7 +265,7 @@ func validateSymbols(symbols []string) error {
 
 func grpcSchemaOutput(result synthientsdk.GRPCSchemaResult, includeDescriptor bool) (GRPCSchemaOutput, error) {
 	if result.DescriptorSet == nil {
-		return GRPCSchemaOutput{}, fmt.Errorf("Synthient gRPC reflection returned no descriptor set")
+		return GRPCSchemaOutput{}, fmt.Errorf("synthient gRPC reflection returned no descriptor set")
 	}
 	output := GRPCSchemaOutput{Endpoint: result.Endpoint, Symbols: result.Symbols, Services: summarizeServices(result.DescriptorSet)}
 	for _, file := range result.DescriptorSet.GetFile() {
