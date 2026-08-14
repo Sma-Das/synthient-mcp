@@ -23,6 +23,12 @@ Notable changes are recorded here. This project follows semantic versioning.
 - Align account, IP, and domain tool names and response shapes with Synthient's official MCP server.
 - Combine single and batch IP enrichment in `lookup_ip` and return useful text summaries alongside structured output.
 
+### Added
+
+- Add the official feed catalog, snapshot listing, snapshot metadata, live sampling, and gRPC schema tools.
+- Bound live samples by validated stream, filter count, event size, total bytes, matching event count, and deadline.
+- Restrict gRPC reflection to a TLS endpoint selected by server configuration and return summaries by default.
+
 ### Delivery
 
 - Add CI, release verification, immutable build identity, stable-only `latest` tagging, dependency automation, a scratch runtime image, and hardened Docker Compose defaults.

@@ -46,7 +46,7 @@ func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
 			Version: buildinfo.Version,
 		},
 		&mcp.ServerOptions{
-			Instructions: "Use these tools to enrich IP addresses, inspect domain honeypot activity, and check the caller's Synthient account scopes and quota. Intelligence lookups are metered and can consume account credit.",
+			Instructions: "Use these tools to enrich IP addresses, inspect domain honeypot activity, discover feed snapshots, collect small live-feed samples, inspect protobuf services, and check account scopes and quota. Intelligence lookups are metered and can consume account credit.",
 			Capabilities: &mcp.ServerCapabilities{},
 			SchemaCache:  schemaCache,
 		},

@@ -28,6 +28,7 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-info}"
       LOG_FORMAT: "${LOG_FORMAT:-text}"
       SYNTHIENT_API_BASE_URL: "${SYNTHIENT_API_BASE_URL:-https://api.synthient.com/api/v4/}"
+      SYNTHIENT_GRPC_ENDPOINT: "${SYNTHIENT_GRPC_ENDPOINT:-grpc.synthient.com:443}"
     read_only: true
     cap_drop:
       - ALL
