@@ -10,12 +10,17 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Sma-Das/synthient-mcp/go/internal/buildinfo"
 	"github.com/Sma-Das/synthient-mcp/go/internal/config"
 	"github.com/Sma-Das/synthient-mcp/go/internal/httpserver"
+	"github.com/Sma-Das/synthient-mcp/go/internal/mcpserver"
+	"github.com/Sma-Das/synthient-mcp/go/internal/synthient"
 )
 
 func main() {
@@ -26,6 +31,12 @@ func main() {
 			return
 		case "healthcheck":
 			if err := healthcheck(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		case "stdio":
+			if err := runStdioCommand(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
@@ -47,6 +58,30 @@ func main() {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runStdioCommand() error {
+	apiKey := strings.TrimSpace(os.Getenv("SYNTHIENT_API_KEY"))
+	if apiKey == "" || len(apiKey) > 1024 {
+		return fmt.Errorf("stdio: SYNTHIENT_API_KEY must contain a bounded Synthient API key")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("stdio: invalid configuration: %w", err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runStdio(ctx, cfg, apiKey)
+}
+
+func runStdio(ctx context.Context, cfg config.Config, apiKey string) error {
+	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
+	client := synthient.NewClient(cfg.SynthientBaseURL, apiKey, "", httpClient).WithGRPCEndpoint(cfg.SynthientGRPCEndpoint)
+	server := mcpserver.New(client, mcp.NewSchemaCache())
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("stdio MCP server: %w", err)
+	}
+	return nil
 }
 
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
