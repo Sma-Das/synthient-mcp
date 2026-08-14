@@ -22,6 +22,7 @@ type Config struct {
 	TrustProxyHops        int
 	TrustedProxyCIDRs     []netip.Prefix
 	SynthientBaseURL      *url.URL
+	SynthientGRPCEndpoint string
 	RequestTimeout        time.Duration
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
@@ -113,6 +114,10 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	if !strings.HasSuffix(baseURL.Path, "/") {
 		baseURL.Path += "/"
 	}
+	grpcEndpoint := strings.TrimSpace(get(lookup, "SYNTHIENT_GRPC_ENDPOINT", "grpc.synthient.com:443"))
+	if err := validateGRPCEndpoint(grpcEndpoint); err != nil {
+		return Config{}, err
+	}
 
 	logLevel, err := parseLogLevel(get(lookup, "LOG_LEVEL", "info"))
 	if err != nil {
@@ -131,6 +136,7 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		TrustProxyHops:        trustProxyHops,
 		TrustedProxyCIDRs:     trustedProxyCIDRs,
 		SynthientBaseURL:      baseURL,
+		SynthientGRPCEndpoint: grpcEndpoint,
 		RequestTimeout:        time.Duration(timeoutMS) * time.Millisecond,
 		ReadTimeout:           time.Duration(readTimeoutMS) * time.Millisecond,
 		WriteTimeout:          time.Duration(writeTimeoutMS) * time.Millisecond,
@@ -144,6 +150,18 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		LogLevel:              logLevel,
 		LogJSON:               logFormat == "json",
 	}, nil
+}
+
+func validateGRPCEndpoint(value string) error {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || host == "" || port == "" || strings.ContainsAny(value, "/\\\t\r\n") {
+		return fmt.Errorf("SYNTHIENT_GRPC_ENDPOINT must be a host:port without a URL scheme or path")
+	}
+	parsedPort, err := strconv.Atoi(port)
+	if err != nil || parsedPort < 1 || parsedPort > 65535 {
+		return fmt.Errorf("SYNTHIENT_GRPC_ENDPOINT must contain a port between 1 and 65535")
+	}
+	return nil
 }
 
 func (c Config) Address() string {
