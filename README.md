@@ -215,9 +215,9 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Release jobs re-run all verification before publishing `linux/amd64` and `linux/arm64` images. Stable releases receive full, minor, major, and `latest` tags; prereleases receive only their full prerelease version. Runtime MCP metadata, User-Agent, health output, and image metadata share the injected version and commit. Published images include an SBOM and provenance, and the workflow reports the immutable image digest.
+Release jobs re-run all verification before publishing `linux/amd64` and `linux/arm64` images plus checksummed native binaries for Linux, macOS, and Windows on `amd64` and `arm64`. Stable container releases receive full, minor, major, and `latest` tags; prereleases receive only their full prerelease version. Runtime MCP metadata, User-Agent, health output, binary archives, and image metadata share the injected version and commit. Published images include an SBOM and provenance, and the workflow reports the immutable image digest.
 
-The repository requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. See [SECURITY.md](SECURITY.md) for vulnerability and credential-handling guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for the change workflow.
+Tag only a reviewed commit already merged to `main`; see [RELEASING.md](RELEASING.md) for the release checklist. The repository requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. See [SECURITY.md](SECURITY.md) for vulnerability and credential-handling guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for the change workflow.
 
 ## License
 

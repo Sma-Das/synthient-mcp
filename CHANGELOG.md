@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning.
 
-## Unreleased
+## 0.2.0 - Unreleased
 
 ### Security
 
@@ -41,4 +41,5 @@ Notable changes are recorded here. This project follows semantic versioning.
 ### Delivery
 
 - Add CI, release verification, immutable build identity, stable-only `latest` tagging, dependency automation, a scratch runtime image, and hardened Docker Compose defaults.
+- Publish checksummed native stdio binaries for Linux, macOS, and Windows from the same verified tag as the container image.
 - Add an Apache-2.0 license and clarify that this is an independent community project.

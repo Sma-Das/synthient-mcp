@@ -1,4 +1,4 @@
-name: Publish Docker image
+name: Publish release
 
 on:
   push:
@@ -75,7 +75,7 @@ jobs:
         run: make fmt-check tidy-check vet staticcheck test race vuln build docker-check
 
   publish:
-    name: Build and push
+    name: Build and push container
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -128,3 +128,69 @@ jobs:
 
       - name: Report immutable digest
         run: echo "Published $IMAGE_NAME@${{ steps.build.outputs.digest }}"
+
+  binaries:
+    name: Publish native binaries
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26.x
+          check-latest: true
+          cache-dependency-path: go/go.sum
+
+      - name: Build release archives
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          COMMIT: ${{ needs.verify.outputs.commit }}
+          BUILD_DATE: ${{ needs.verify.outputs.build_date }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            archive="synthient-mcp_${VERSION}_${goos}_${goarch}"
+            binary="synthient-mcp"
+            if [[ "$goos" == "windows" ]]; then binary="synthient-mcp.exe"; fi
+            (
+              cd go
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+                -ldflags "-s -w -X github.com/Sma-Das/synthient-mcp/go/internal/buildinfo.Version=$VERSION -X github.com/Sma-Das/synthient-mcp/go/internal/buildinfo.Commit=$COMMIT -X github.com/Sma-Das/synthient-mcp/go/internal/buildinfo.Date=$BUILD_DATE" \
+                -o "../dist/package/$binary" ./cmd/server
+            )
+            if [[ "$goos" == "windows" ]]; then
+              (cd dist/package && zip -q "../${archive}.zip" "$binary")
+            else
+              tar -C dist/package -czf "dist/${archive}.tar.gz" "$binary"
+            fi
+            rm "dist/package/$binary"
+          done
+          rmdir dist/package
+          (cd dist && sha256sum synthient-mcp_* > SHA256SUMS)
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE: ${{ needs.verify.outputs.stable }}
+        run: |
+          set -euo pipefail
+          release_flags=()
+          if [[ "$STABLE" != "true" ]]; then release_flags+=(--prerelease); fi
+          gh release create "$RELEASE_REF" dist/* \
+            --verify-tag \
+            --generate-notes \
+            --title "Synthient MCP $RELEASE_REF" \
+            "${release_flags[@]}"
