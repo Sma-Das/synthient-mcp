@@ -29,6 +29,58 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.MaxConcurrentRequests != 8 || cfg.MaxHeaderBytes != 32768 || cfg.ReadTimeout <= cfg.RequestTimeout {
 		t.Fatalf("unexpected limits: %+v", cfg)
 	}
+	if cfg.AuthMode != "api_key" || cfg.ForwardClientIP || cfg.CORSEnabled || cfg.MaxConcurrentPerUser != 2 {
+		t.Fatalf("unexpected security defaults: %+v", cfg)
+	}
+}
+
+func TestLoadFromOAuthMode(t *testing.T) {
+	cfg, err := LoadFrom(lookupValues(map[string]string{
+		"AUTH_MODE":             "oauth",
+		"SYNTHIENT_API_KEY":     "server-synthient-key",
+		"OAUTH_ISSUER_URL":      "https://id.example.com/",
+		"OAUTH_JWKS_URL":        "https://id.example.com/.well-known/jwks.json",
+		"OAUTH_AUDIENCE":        "https://mcp.example.com/mcp",
+		"MCP_RESOURCE_URL":      "https://mcp.example.com/mcp",
+		"OAUTH_REQUIRED_SCOPES": "mcp:tools,synthient:read",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthMode != "oauth" || cfg.SynthientAPIKey != "server-synthient-key" || len(cfg.OAuthRequiredScopes) != 2 {
+		t.Fatalf("oauth config = %+v", cfg)
+	}
+}
+
+func TestLoadFromRejectsIncompleteOAuthMode(t *testing.T) {
+	base := map[string]string{
+		"AUTH_MODE":         "oauth",
+		"SYNTHIENT_API_KEY": "server-synthient-key",
+		"OAUTH_ISSUER_URL":  "https://id.example.com/",
+		"OAUTH_JWKS_URL":    "https://id.example.com/jwks.json",
+		"OAUTH_AUDIENCE":    "https://mcp.example.com/mcp",
+		"MCP_RESOURCE_URL":  "https://mcp.example.com/mcp",
+	}
+	for _, name := range []string{"SYNTHIENT_API_KEY", "OAUTH_ISSUER_URL", "OAUTH_JWKS_URL", "OAUTH_AUDIENCE", "MCP_RESOURCE_URL"} {
+		values := map[string]string{}
+		for key, value := range base {
+			values[key] = value
+		}
+		delete(values, name)
+		if _, err := LoadFrom(lookupValues(values)); err == nil {
+			t.Errorf("missing %s succeeded", name)
+		}
+	}
+}
+
+func TestLoadFromRequiresOriginsForCORS(t *testing.T) {
+	if _, err := LoadFrom(lookupValues(map[string]string{"CORS_ENABLED": "true"})); err == nil {
+		t.Fatal("CORS without origins succeeded")
+	}
+	cfg, err := LoadFrom(lookupValues(map[string]string{"CORS_ENABLED": "true", "ALLOWED_ORIGINS": "https://app.example.com"}))
+	if err != nil || !cfg.CORSEnabled {
+		t.Fatalf("config=%+v error=%v", cfg, err)
+	}
 }
 
 func TestLoadFromValidatesGRPCEndpoint(t *testing.T) {

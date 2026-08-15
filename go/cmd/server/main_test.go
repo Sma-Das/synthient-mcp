@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -54,5 +55,12 @@ func TestServeWaitsForInflightRequestDuringShutdown(t *testing.T) {
 	}
 	if err := <-serveResult; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStdioRequiresAPIKey(t *testing.T) {
+	t.Setenv("SYNTHIENT_API_KEY", "")
+	if err := runStdioCommand(); err == nil || !strings.Contains(err.Error(), "SYNTHIENT_API_KEY") {
+		t.Fatalf("error = %v", err)
 	}
 }
