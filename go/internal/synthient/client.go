@@ -22,8 +22,14 @@ type Client struct {
 	baseURL      *url.URL
 	apiKey       string
 	forwardedFor string
+	grpcEndpoint string
 	httpClient   HTTPDoer
 	observer     Observer
+}
+
+func (c *Client) WithGRPCEndpoint(endpoint string) *Client {
+	c.grpcEndpoint = strings.TrimSpace(endpoint)
+	return c
 }
 
 type HTTPDoer interface {
@@ -104,6 +110,10 @@ func requestAs[T any](ctx context.Context, client *Client, method string, path [
 }
 
 func (c *Client) request(ctx context.Context, method string, path []string, body any) (map[string]any, error) {
+	return c.requestQuery(ctx, method, path, nil, body)
+}
+
+func (c *Client) requestQuery(ctx context.Context, method string, path []string, query url.Values, body any) (map[string]any, error) {
 	if c.baseURL == nil {
 		return nil, fmt.Errorf("synthient API base URL is not configured")
 	}
@@ -123,6 +133,7 @@ func (c *Client) request(ctx context.Context, method string, path []string, body
 	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
 		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
 	}
+	endpoint.RawQuery = query.Encode()
 
 	var reader io.Reader
 	if body != nil {

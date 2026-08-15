@@ -32,6 +32,10 @@ type API interface {
 	LookupIP(context.Context, string) (synthientsdk.IP, error)
 	LookupIPs(context.Context, []string) ([]synthientsdk.IP, error)
 	LookupDomain(context.Context, string) (synthientsdk.Domain, error)
+	FeedSnapshots(context.Context, string, int, string) (synthientsdk.FeedSnapshotsPage, error)
+	FeedSnapshotMeta(context.Context, string, []string) (synthientsdk.FeedSnapshotMeta, error)
+	SampleStream(context.Context, string, int, int, map[string]string) ([]map[string]any, bool, error)
+	GRPCSchema(context.Context, []string) (synthientsdk.GRPCSchemaResult, error)
 }
 
 func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
@@ -42,7 +46,7 @@ func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
 			Version: buildinfo.Version,
 		},
 		&mcp.ServerOptions{
-			Instructions: "Use these tools to enrich IP addresses, inspect domain honeypot activity, and check the caller's Synthient account scopes and quota. Intelligence lookups are metered and can consume account credit.",
+			Instructions: "Use these tools to enrich IP addresses, inspect domain honeypot activity, discover feed snapshots, collect small live-feed samples, inspect protobuf services, and check account scopes and quota. Intelligence lookups are metered and can consume account credit.",
 			Capabilities: &mcp.ServerCapabilities{},
 			SchemaCache:  schemaCache,
 		},
@@ -116,6 +120,8 @@ func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
 		return successResult(domainSummary(value)), value, nil
 	})
 
+	registerFeedTools(server, client)
+
 	return server
 }
 
@@ -123,11 +129,10 @@ func tool(name, title, description string, metered bool, inputSchema *jsonschema
 	readOnly := !metered
 	destructive := metered
 	openWorld := true
-	return &mcp.Tool{
+	tool := &mcp.Tool{
 		Name:        name,
 		Title:       title,
 		Description: description,
-		InputSchema: inputSchema,
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:    readOnly,
 			DestructiveHint: &destructive,
@@ -135,6 +140,10 @@ func tool(name, title, description string, metered bool, inputSchema *jsonschema
 			OpenWorldHint:   &openWorld,
 		},
 	}
+	if inputSchema != nil {
+		tool.InputSchema = inputSchema
+	}
+	return tool
 }
 
 func accountSummary(account synthientsdk.Account) string {

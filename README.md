@@ -1,6 +1,6 @@
 # Synthient MCP Server
 
-A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for the [Synthient](https://synthient.com/) intelligence API. It exposes account, IP, batch-IP, and Helios domain intelligence over stateless Streamable HTTP.
+A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for the [Synthient](https://synthient.com/) intelligence API. It exposes account, IP, domain, snapshot, live-feed, and protobuf intelligence over stateless Streamable HTTP.
 
 This is an independent, community-maintained project. It is not an official Synthient product and is not affiliated with or endorsed by Synthient.
 
@@ -9,6 +9,7 @@ The server uses the official MCP Go SDK and currently negotiates protocol `2026-
 ## Security model
 
 - The service forwards the caller's `x-api-key` only to the configured Synthient origin and refuses upstream redirects.
+- The gRPC reflection endpoint is fixed by server configuration, uses TLS, and cannot be overridden by MCP callers.
 - IP and domain path inputs are validated, canonicalized, and escaped before upstream requests.
 - Credential-shaped fields and the literal caller key are removed from upstream results and errors.
 - Host and browser-Origin checks protect the MCP endpoint. Proxy forwarding headers are trusted only from configured proxy CIDRs.
@@ -75,8 +76,15 @@ Environment-variable expansion is performed by the MCP client. If the client doe
 | `get_account` | `GET /api/v4/account/me` | Reads account ownership, scopes, credits, and reset timing; credential fields are omitted |
 | `lookup_ip` | `GET /api/v4/lookup/ip/{ip}` or `POST /api/v4/lookup/ips` | Enriches 1–1,000 validated addresses, using discounted batch billing for multiple addresses |
 | `lookup_domain` | `GET /api/v4/lookup/domain/{domain}` | Retrieves Helios domain intelligence and consumes lookup credit |
+| `list_feed_streams` | local catalog | Lists seven snapshot feeds, aliases, live availability, and required scopes |
+| `list_feed_snapshots` | `GET /api/v4/feeds/.../export` | Lists daily and hourly Parquet snapshots with bounded cursor pagination |
+| `feed_snapshot_meta` | `GET /api/v4/feeds/.../export/{date}/meta` | Reads checksum, size, rows, and Parquet schema for one validated snapshot |
+| `sample_stream` | `GET /api/v4/feeds/.../stream` | Returns at most 50 filtered events, 1 MiB of output, or 15 seconds of live data |
+| `grpc_schema` | Synthient gRPC reflection | Returns a bounded service summary; descriptor JSON is optional and limited to 1 MiB |
 
 Tool names and response shapes follow Synthient's official MCP contract. Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. Results use the official typed Synthient SDK models and include structured content plus a useful short text summary.
+
+The server deliberately does not expose snapshot downloads as MCP results. Parquet files are too large for model context; use Synthient's official CLI for download and checksum verification.
 
 ## Configuration
 
@@ -96,6 +104,7 @@ Tool names and response shapes follow Synthient's official MCP contract. Lookup 
 | `MAX_HEADER_BYTES` | `32768` | Maximum inbound HTTP header size |
 | `MAX_CONCURRENT_REQUESTS` | `8` | Maximum simultaneous authenticated MCP requests |
 | `SYNTHIENT_API_BASE_URL` | `https://api.synthient.com/api/v4/` | Test override; HTTP is accepted only for loopback |
+| `SYNTHIENT_GRPC_ENDPOINT` | `grpc.synthient.com:443` | TLS gRPC reflection endpoint fixed at server startup; MCP callers cannot override it |
 | `METRICS_ENABLED` | `false` | Expose `GET /metrics`; protect it at the network or proxy layer |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `LOG_FORMAT` | `text` | `text` or `json` structured logs |

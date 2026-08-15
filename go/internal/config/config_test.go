@@ -23,8 +23,24 @@ func TestLoadFromDefaults(t *testing.T) {
 	if got := cfg.SynthientBaseURL.String(); got != "https://api.synthient.com/api/v4/" {
 		t.Fatalf("base URL = %q", got)
 	}
+	if cfg.SynthientGRPCEndpoint != "grpc.synthient.com:443" {
+		t.Fatalf("gRPC endpoint = %q", cfg.SynthientGRPCEndpoint)
+	}
 	if cfg.MaxConcurrentRequests != 8 || cfg.MaxHeaderBytes != 32768 || cfg.ReadTimeout <= cfg.RequestTimeout {
 		t.Fatalf("unexpected limits: %+v", cfg)
+	}
+}
+
+func TestLoadFromValidatesGRPCEndpoint(t *testing.T) {
+	for _, value := range []string{"", "grpc.synthient.com", "https://grpc.synthient.com:443", "grpc.synthient.com:0", "grpc.synthient.com:70000"} {
+		_, err := LoadFrom(lookupValues(map[string]string{"SYNTHIENT_GRPC_ENDPOINT": value}))
+		if err == nil {
+			t.Errorf("expected %q to be rejected", value)
+		}
+	}
+	config, err := LoadFrom(lookupValues(map[string]string{"SYNTHIENT_GRPC_ENDPOINT": "schema.example.com:443"}))
+	if err != nil || config.SynthientGRPCEndpoint != "schema.example.com:443" {
+		t.Fatalf("config=%#v error=%v", config, err)
 	}
 }
 

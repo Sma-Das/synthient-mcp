@@ -75,7 +75,7 @@ func NewHandlerWithLogger(cfg config.Config, logger *slog.Logger) http.Handler {
 				request.Header.Get("X-Forwarded-For"),
 				apiClient,
 				stats,
-			)
+			).WithGRPCEndpoint(cfg.SynthientGRPCEndpoint)
 			return mcpserver.New(client, schemaCache)
 		},
 		&mcp.StreamableHTTPOptions{
