@@ -43,6 +43,7 @@ type Config struct {
 	MaxHeaderBytes        int
 	MaxConcurrentRequests int
 	MaxConcurrentPerUser  int
+	MaxRequestsPerMinute  int
 	MaxAPIKeyLength       int
 	MetricsEnabled        bool
 	LogLevel              slog.Level
@@ -129,6 +130,10 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if maxConcurrentPerUser > maxConcurrentRequests {
 		return Config{}, fmt.Errorf("MAX_CONCURRENT_PER_PRINCIPAL must not exceed MAX_CONCURRENT_REQUESTS")
+	}
+	maxRequestsPerMinute, err := integer(lookup, "MAX_REQUESTS_PER_MINUTE", 120, 0, 100000)
+	if err != nil {
+		return Config{}, err
 	}
 	forwardClientIP, err := boolean(lookup, "FORWARD_CLIENT_IP", false)
 	if err != nil {
@@ -232,6 +237,7 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		MaxHeaderBytes:        maxHeaderBytes,
 		MaxConcurrentRequests: maxConcurrentRequests,
 		MaxConcurrentPerUser:  maxConcurrentPerUser,
+		MaxRequestsPerMinute:  maxRequestsPerMinute,
 		MaxAPIKeyLength:       1024,
 		MetricsEnabled:        metricsEnabled,
 		LogLevel:              logLevel,

@@ -30,7 +30,7 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.MaxConcurrentRequests != 8 || cfg.MaxHeaderBytes != 32768 || cfg.ReadTimeout <= cfg.RequestTimeout {
 		t.Fatalf("unexpected limits: %+v", cfg)
 	}
-	if cfg.AuthMode != "api_key" || cfg.ForwardClientIP || cfg.CORSEnabled || cfg.LegacyToolNames || cfg.MaxConcurrentPerUser != 2 {
+	if cfg.AuthMode != "api_key" || cfg.ForwardClientIP || cfg.CORSEnabled || cfg.LegacyToolNames || cfg.MaxConcurrentPerUser != 2 || cfg.MaxRequestsPerMinute != 120 {
 		t.Fatalf("unexpected security defaults: %+v", cfg)
 	}
 	if cfg.StreamTimeout != 15*time.Second || cfg.WriteTimeout != 20*time.Second {
