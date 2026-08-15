@@ -31,6 +31,7 @@ type telemetry struct {
 	httpInflight          atomic.Int64
 	httpRejected          atomic.Int64
 	httpPrincipalRejected atomic.Int64
+	httpRateRejected      atomic.Int64
 	upstreamRequests      atomic.Int64
 	upstreamTransport     atomic.Int64
 	upstreamSuccess       atomic.Int64
@@ -88,7 +89,10 @@ func newHandler(cfg config.Config, logger *slog.Logger, verifier auth.TokenVerif
 				apiClient,
 				stats,
 			).WithGRPCEndpoint(cfg.SynthientGRPCEndpoint)
-			return mcpserver.New(client, schemaCache)
+			return mcpserver.New(client, schemaCache, mcpserver.Options{
+				LegacyToolNames: cfg.LegacyToolNames,
+				SampleTimeout:   cfg.StreamTimeout,
+			})
 		},
 		&mcp.StreamableHTTPOptions{
 			Stateless:                    true,
@@ -113,6 +117,9 @@ func newHandler(cfg config.Config, logger *slog.Logger, verifier auth.TokenVerif
 		perPrincipal = 2
 	}
 	mcpRoute := limitConcurrentPerPrincipal(perPrincipal, stats, mcpHandler)
+	if cfg.MaxRequestsPerMinute > 0 {
+		mcpRoute = limitRatePerPrincipal(cfg.MaxRequestsPerMinute, stats, mcpRoute)
+	}
 	mcpRoute = protectMCP(cfg, mcpRoute)
 	if cfg.AuthMode == "oauth" {
 		if verifier == nil {
@@ -266,6 +273,80 @@ func requestPrincipal(request *http.Request) string {
 		return "api-key:" + hex.EncodeToString(digest[:])
 	}
 	return ""
+}
+
+const maxTrackedRatePrincipals = 10000
+
+type principalRateWindow struct {
+	count   int
+	resetAt time.Time
+}
+
+type principalRateLimiter struct {
+	mutex   sync.Mutex
+	limit   int
+	now     func() time.Time
+	windows map[string]principalRateWindow
+	stats   *telemetry
+}
+
+func limitRatePerPrincipal(limit int, stats *telemetry, next http.Handler) http.Handler {
+	limiter := &principalRateLimiter{
+		limit:   limit,
+		now:     time.Now,
+		windows: make(map[string]principalRateWindow),
+		stats:   stats,
+	}
+	return limiter.handler(next)
+}
+
+func (limiter *principalRateLimiter) handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		principal := requestPrincipal(request)
+		if principal == "" {
+			writeError(response, http.StatusUnauthorized, "Unable to identify the authenticated principal.")
+			return
+		}
+		now := limiter.now()
+		limiter.mutex.Lock()
+		window, exists := limiter.windows[principal]
+		if exists && !now.Before(window.resetAt) {
+			delete(limiter.windows, principal)
+			exists = false
+		}
+		if !exists && len(limiter.windows) >= maxTrackedRatePrincipals {
+			for key, candidate := range limiter.windows {
+				if !now.Before(candidate.resetAt) {
+					delete(limiter.windows, key)
+				}
+			}
+		}
+		if !exists && len(limiter.windows) >= maxTrackedRatePrincipals {
+			limiter.mutex.Unlock()
+			limiter.reject(response, 1, "The server is tracking its maximum number of active principals; retry shortly.")
+			return
+		}
+		if !exists {
+			window = principalRateWindow{resetAt: now.Add(time.Minute)}
+		}
+		if window.count >= limiter.limit {
+			remaining := window.resetAt.Sub(now)
+			retryAfter := max(1, int((remaining+time.Second-1)/time.Second))
+			limiter.mutex.Unlock()
+			limiter.reject(response, retryAfter, "The authenticated principal has reached its request rate limit.")
+			return
+		}
+		window.count++
+		limiter.windows[principal] = window
+		limiter.mutex.Unlock()
+		next.ServeHTTP(response, request)
+	})
+}
+
+func (limiter *principalRateLimiter) reject(response http.ResponseWriter, retryAfter int, message string) {
+	limiter.stats.httpRateRejected.Add(1)
+	response.Header().Set("Retry-After", fmt.Sprint(retryAfter))
+	writeError(response, http.StatusTooManyRequests, message)
 }
 
 func allowCORS(cfg config.Config, next http.Handler) http.Handler {
@@ -435,6 +516,7 @@ func (stats *telemetry) ServeHTTP(response http.ResponseWriter, _ *http.Request)
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_inflight gauge\nsynthient_mcp_http_inflight %d\n", stats.httpInflight.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_rejected_total counter\nsynthient_mcp_http_rejected_total %d\n", stats.httpRejected.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_principal_rejected_total counter\nsynthient_mcp_http_principal_rejected_total %d\n", stats.httpPrincipalRejected.Load())
+	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_http_rate_rejected_total counter\nsynthient_mcp_http_rate_rejected_total %d\n", stats.httpRateRejected.Load())
 	_, _ = fmt.Fprintf(response, "# TYPE synthient_mcp_upstream_requests_total counter\nsynthient_mcp_upstream_requests_total %d\n", stats.upstreamRequests.Load())
 	_, _ = fmt.Fprintln(response, "# TYPE synthient_mcp_upstream_requests_by_outcome counter")
 	_, _ = fmt.Fprintf(response, "synthient_mcp_upstream_requests_by_outcome{outcome=\"success\"} %d\n", stats.upstreamSuccess.Load())

@@ -14,10 +14,10 @@ The server uses the official MCP Go SDK and currently negotiates protocol `2026-
 - IP and domain path inputs are validated, canonicalized, and escaped before upstream requests.
 - Credential-shaped fields and the literal caller key are removed from upstream results and errors.
 - Host and browser-Origin checks protect the MCP endpoint. Caller-IP forwarding is disabled by default and trusts proxy headers only when explicitly enabled with configured proxy CIDRs.
-- Request bodies, headers, upstream duration, response size, and concurrent work are bounded.
+- Request bodies, headers, upstream duration, live-stream duration, response size, request rate, and concurrent work are bounded.
 - The container runs without root, capabilities, or a writable root filesystem.
 
-API-key mode is intended for loopback and controlled self-hosting. Public deployments should use OAuth mode or an authenticated gateway, TLS, network restrictions, and edge rate limiting. Host validation is not network access control.
+API-key mode is intended for loopback and controlled self-hosting. Public deployments should use OAuth mode or an authenticated gateway, TLS, network restrictions, and an edge rate limit in addition to the server's per-principal limit. Host validation is not network access control.
 
 ## Quick start with Docker
 
@@ -116,6 +116,8 @@ OAuth access tokens and Synthient credentials are deliberately separate. `SYNTHI
 
 Tool names and response shapes follow Synthient's official MCP contract. Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. Results use the official typed Synthient SDK models and include structured content plus a useful short text summary.
 
+Existing clients that used this project's pre-contract names can set `LEGACY_TOOL_NAMES=true` temporarily. This adds `synthient_account`, `synthient_lookup_ip`, `synthient_lookup_ips`, and `synthient_lookup_domain` as aliases; it does not replace the canonical tools. Leave it disabled for new installations because duplicate tools add model-selection ambiguity. Remove the flag after migrating client prompts and allowlists.
+
 The server deliberately does not expose snapshot downloads as MCP results. Parquet files are too large for model context; use Synthient's official CLI for download and checksum verification.
 
 ## Configuration
@@ -131,13 +133,16 @@ The server deliberately does not expose snapshot downloads as MCP results. Parqu
 | `FORWARD_CLIENT_IP` | `false` | Forward the canonical caller IP to Synthient; enable only when required |
 | `CORS_ENABLED` | `false` | Return exact-origin CORS headers and credential-free preflight responses for `ALLOWED_ORIGINS` |
 | `REQUEST_TIMEOUT_MS` | `15000` | Upstream timeout, from 100 to 120,000 ms |
-| `READ_TIMEOUT_MS` | request timeout + 5 seconds | Complete inbound-request timeout |
-| `WRITE_TIMEOUT_MS` | request timeout + 5 seconds | Complete response-write timeout |
+| `STREAM_TIMEOUT_MS` | `15000` | Maximum live-sample deadline, from 1,000 to 30,000 ms |
+| `READ_TIMEOUT_MS` | longest operation timeout + 5 seconds | Complete inbound-request timeout |
+| `WRITE_TIMEOUT_MS` | longest operation timeout + 5 seconds | Complete response-write timeout; must exceed `STREAM_TIMEOUT_MS` |
 | `IDLE_TIMEOUT_MS` | `60000` | HTTP keep-alive idle timeout |
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Graceful-drain deadline |
 | `MAX_HEADER_BYTES` | `32768` | Maximum inbound HTTP header size |
 | `MAX_CONCURRENT_REQUESTS` | `8` | Maximum simultaneous authenticated MCP requests |
 | `MAX_CONCURRENT_PER_PRINCIPAL` | `2` | Per-API-key or per-OAuth-subject concurrency ceiling |
+| `MAX_REQUESTS_PER_MINUTE` | `120` | Per-principal fixed-window request limit; `0` disables it |
+| `LEGACY_TOOL_NAMES` | `false` | Add four pre-contract compatibility aliases alongside canonical tools |
 | `SYNTHIENT_API_BASE_URL` | `https://api.synthient.com/api/v4/` | Test override; HTTP is accepted only for loopback |
 | `SYNTHIENT_GRPC_ENDPOINT` | `grpc.synthient.com:443` | TLS gRPC reflection endpoint fixed at server startup; MCP callers cannot override it |
 | `AUTH_MODE` | `api_key` | `api_key` for per-caller keys or `oauth` for a protected remote resource |
@@ -183,7 +188,7 @@ Caller-IP forwarding is normally unnecessary. When enabled, the direct TCP peer 
 
 Requests receive an `X-Request-ID`. Logs contain method, fixed route, status, duration, version, and safe capacity settings. They intentionally omit API keys, request/response bodies, queried IPs and domains, and forwarding chains.
 
-Optional metrics expose only bounded counters for HTTP traffic, global and per-principal concurrency rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
+Optional metrics expose only bounded counters for HTTP traffic, global concurrency rejection, per-principal concurrency and rate rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
 
 ## Development
 
@@ -210,9 +215,9 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Release jobs re-run all verification before publishing `linux/amd64` and `linux/arm64` images. Stable releases receive full, minor, major, and `latest` tags; prereleases receive only their full prerelease version. Runtime MCP metadata, User-Agent, health output, and image metadata share the injected version and commit. Published images include an SBOM and provenance, and the workflow reports the immutable image digest.
+Release jobs re-run all verification before publishing `linux/amd64` and `linux/arm64` images plus checksummed native binaries for Linux, macOS, and Windows on `amd64` and `arm64`. Stable container releases receive full, minor, major, and `latest` tags; prereleases receive only their full prerelease version. Runtime MCP metadata, User-Agent, health output, binary archives, and image metadata share the injected version and commit. Published images include an SBOM and provenance, and the workflow reports the immutable image digest.
 
-The repository requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. See [SECURITY.md](SECURITY.md) for vulnerability and credential-handling guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for the change workflow.
+Tag only a reviewed commit already merged to `main`; see [RELEASING.md](RELEASING.md) for the release checklist. The repository requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. See [SECURITY.md](SECURITY.md) for vulnerability and credential-handling guidance and [CONTRIBUTING.md](CONTRIBUTING.md) for the change workflow.
 
 ## License
 

@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning.
 
-## Unreleased
+## 0.2.0 - Unreleased
 
 ### Security
 
@@ -15,6 +15,7 @@ Notable changes are recorded here. This project follows semantic versioning.
 ### Reliability
 
 - Await graceful shutdown and bound headers, complete requests, upstream calls, and concurrency.
+- Give live samples an independent server-configured deadline and enforce per-principal request rates.
 - Add secret-safe request telemetry, health build identity, and optional bounded metrics.
 - Use the official typed Synthient SDK contracts and current flat domain response model.
 
@@ -31,6 +32,7 @@ Notable changes are recorded here. This project follows semantic versioning.
 - Add local stdio transport using environment-provided Synthient credentials.
 - Add OAuth resource-server mode with JWT verification, scope enforcement, RFC 9728 discovery, and strict token separation.
 - Add exact-origin opt-in CORS and per-principal concurrency limits.
+- Add opt-in aliases for clients migrating from this project's original tool names.
 
 ### Privacy
 
@@ -39,4 +41,5 @@ Notable changes are recorded here. This project follows semantic versioning.
 ### Delivery
 
 - Add CI, release verification, immutable build identity, stable-only `latest` tagging, dependency automation, a scratch runtime image, and hardened Docker Compose defaults.
+- Publish checksummed native stdio binaries for Linux, macOS, and Windows from the same verified tag as the container image.
 - Add an Apache-2.0 license and clarify that this is an independent community project.

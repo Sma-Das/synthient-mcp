@@ -1,12 +1,77 @@
 package mcpserver
 
 import (
+	"context"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	synthientsdk "github.com/synthient/go-synthient/v2"
 )
+
+type stubAPI struct{}
+
+func (stubAPI) Account(context.Context) (synthientsdk.Account, error) {
+	return synthientsdk.Account{}, nil
+}
+func (stubAPI) LookupIP(context.Context, string) (synthientsdk.IP, error) {
+	return synthientsdk.IP{}, nil
+}
+func (stubAPI) LookupIPs(context.Context, []string) ([]synthientsdk.IP, error) { return nil, nil }
+func (stubAPI) LookupDomain(context.Context, string) (synthientsdk.Domain, error) {
+	return synthientsdk.Domain{}, nil
+}
+func (stubAPI) FeedSnapshots(context.Context, string, int, string) (synthientsdk.FeedSnapshotsPage, error) {
+	return synthientsdk.FeedSnapshotsPage{}, nil
+}
+func (stubAPI) FeedSnapshotMeta(context.Context, string, []string) (synthientsdk.FeedSnapshotMeta, error) {
+	return synthientsdk.FeedSnapshotMeta{}, nil
+}
+func (stubAPI) SampleStream(context.Context, string, int, int, map[string]string) ([]map[string]any, bool, error) {
+	return nil, false, nil
+}
+func (stubAPI) GRPCSchema(context.Context, []string) (synthientsdk.GRPCSchemaResult, error) {
+	return synthientsdk.GRPCSchemaResult{}, nil
+}
+
+func TestLegacyToolNamesAreOptIn(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options []Options
+		want    []string
+	}{
+		{name: "canonical", want: []string{"feed_snapshot_meta", "get_account", "grpc_schema", "list_feed_snapshots", "list_feed_streams", "lookup_domain", "lookup_ip", "sample_stream"}},
+		{name: "legacy aliases", options: []Options{{LegacyToolNames: true}}, want: []string{"feed_snapshot_meta", "get_account", "grpc_schema", "list_feed_snapshots", "list_feed_streams", "lookup_domain", "lookup_ip", "sample_stream", "synthient_account", "synthient_lookup_domain", "synthient_lookup_ip", "synthient_lookup_ips"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			serverTransport, clientTransport := mcp.NewInMemoryTransports()
+			server := New(stubAPI{}, mcp.NewSchemaCache(), test.options...)
+			if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
+				t.Fatal(err)
+			}
+			client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+			session, err := client.Connect(ctx, clientTransport, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			result, err := session.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, len(result.Tools))
+			for index, tool := range result.Tools {
+				got[index] = tool.Name
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("tools = %#v; want %#v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestUsefulTextSummaries(t *testing.T) {
 	var account synthientsdk.Account

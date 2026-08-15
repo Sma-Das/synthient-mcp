@@ -57,7 +57,13 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 	}
 
 	started := time.Now()
-	response, err := c.httpClient.Do(request)
+	doer := c.httpClient
+	if client, ok := c.httpClient.(*http.Client); ok {
+		streamClient := *client
+		streamClient.Timeout = 0
+		doer = &streamClient
+	}
+	response, err := doer.Do(request)
 	if err != nil {
 		c.observe(0, time.Since(started))
 		return nil, false, fmt.Errorf("synthient stream request failed: %w", err)

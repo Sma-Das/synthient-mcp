@@ -32,7 +32,9 @@ type Config struct {
 	OAuthRequiredScopes   []string
 	ForwardClientIP       bool
 	CORSEnabled           bool
+	LegacyToolNames       bool
 	RequestTimeout        time.Duration
+	StreamTimeout         time.Duration
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	IdleTimeout           time.Duration
@@ -41,6 +43,7 @@ type Config struct {
 	MaxHeaderBytes        int
 	MaxConcurrentRequests int
 	MaxConcurrentPerUser  int
+	MaxRequestsPerMinute  int
 	MaxAPIKeyLength       int
 	MetricsEnabled        bool
 	LogLevel              slog.Level
@@ -85,13 +88,21 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	readTimeoutMS, err := integer(lookup, "READ_TIMEOUT_MS", timeoutMS+5000, 1000, 180000)
+	streamTimeoutMS, err := integer(lookup, "STREAM_TIMEOUT_MS", 15000, 1000, 30000)
 	if err != nil {
 		return Config{}, err
 	}
-	writeTimeoutMS, err := integer(lookup, "WRITE_TIMEOUT_MS", timeoutMS+5000, 1000, 180000)
+	operationTimeoutMS := max(timeoutMS, streamTimeoutMS)
+	readTimeoutMS, err := integer(lookup, "READ_TIMEOUT_MS", operationTimeoutMS+5000, 1000, 180000)
 	if err != nil {
 		return Config{}, err
+	}
+	writeTimeoutMS, err := integer(lookup, "WRITE_TIMEOUT_MS", operationTimeoutMS+5000, 1000, 180000)
+	if err != nil {
+		return Config{}, err
+	}
+	if writeTimeoutMS <= streamTimeoutMS {
+		return Config{}, fmt.Errorf("WRITE_TIMEOUT_MS must exceed STREAM_TIMEOUT_MS")
 	}
 	idleTimeoutMS, err := integer(lookup, "IDLE_TIMEOUT_MS", 60000, 1000, 300000)
 	if err != nil {
@@ -120,11 +131,19 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 	if maxConcurrentPerUser > maxConcurrentRequests {
 		return Config{}, fmt.Errorf("MAX_CONCURRENT_PER_PRINCIPAL must not exceed MAX_CONCURRENT_REQUESTS")
 	}
+	maxRequestsPerMinute, err := integer(lookup, "MAX_REQUESTS_PER_MINUTE", 120, 0, 100000)
+	if err != nil {
+		return Config{}, err
+	}
 	forwardClientIP, err := boolean(lookup, "FORWARD_CLIENT_IP", false)
 	if err != nil {
 		return Config{}, err
 	}
 	corsEnabled, err := boolean(lookup, "CORS_ENABLED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	legacyToolNames, err := boolean(lookup, "LEGACY_TOOL_NAMES", false)
 	if err != nil {
 		return Config{}, err
 	}
@@ -207,7 +226,9 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		OAuthRequiredScopes:   oauthRequiredScopes,
 		ForwardClientIP:       forwardClientIP,
 		CORSEnabled:           corsEnabled,
+		LegacyToolNames:       legacyToolNames,
 		RequestTimeout:        time.Duration(timeoutMS) * time.Millisecond,
+		StreamTimeout:         time.Duration(streamTimeoutMS) * time.Millisecond,
 		ReadTimeout:           time.Duration(readTimeoutMS) * time.Millisecond,
 		WriteTimeout:          time.Duration(writeTimeoutMS) * time.Millisecond,
 		IdleTimeout:           time.Duration(idleTimeoutMS) * time.Millisecond,
@@ -216,6 +237,7 @@ func LoadFrom(lookup func(string) (string, bool)) (Config, error) {
 		MaxHeaderBytes:        maxHeaderBytes,
 		MaxConcurrentRequests: maxConcurrentRequests,
 		MaxConcurrentPerUser:  maxConcurrentPerUser,
+		MaxRequestsPerMinute:  maxRequestsPerMinute,
 		MaxAPIKeyLength:       1024,
 		MetricsEnabled:        metricsEnabled,
 		LogLevel:              logLevel,

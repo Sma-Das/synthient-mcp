@@ -99,7 +99,7 @@ type GRPCSchemaOutput struct {
 	DescriptorJSON string        `json:"descriptor_json,omitempty"`
 }
 
-func registerFeedTools(server *mcp.Server, client API) {
+func registerFeedTools(server *mcp.Server, client API, options Options) {
 	mcp.AddTool(server, tool("list_feed_streams", "List Synthient feeds", "List supported Synthient snapshot and live feed streams, aliases, and required scopes.", false, nil),
 		func(context.Context, *mcp.CallToolRequest, EmptyInput) (*mcp.CallToolResult, ListFeedStreamsOutput, error) {
 			return successResult(fmt.Sprintf("Synthient exposes %d feed streams; %d support live sampling.", len(feedStreams), liveStreamCount())), ListFeedStreamsOutput{Streams: feedStreams}, nil
@@ -158,12 +158,19 @@ func registerFeedTools(server *mcp.Server, client API) {
 			if count < 1 || count > maxSampleCount {
 				return nil, SampleStreamOutput{}, fmt.Errorf("count must be between 1 and %d", maxSampleCount)
 			}
+			maximumTimeout := maxSampleTimeout
+			if options.SampleTimeout > 0 {
+				maximumTimeout = int(options.SampleTimeout / time.Second)
+				if maximumTimeout < 1 {
+					maximumTimeout = 1
+				}
+			}
 			timeout := input.TimeoutSeconds
 			if timeout == 0 {
-				timeout = defaultSampleTimeout
+				timeout = min(defaultSampleTimeout, maximumTimeout)
 			}
-			if timeout < 1 || timeout > maxSampleTimeout {
-				return nil, SampleStreamOutput{}, fmt.Errorf("timeout_seconds must be between 1 and %d", maxSampleTimeout)
+			if timeout < 1 || timeout > maximumTimeout {
+				return nil, SampleStreamOutput{}, fmt.Errorf("timeout_seconds must be between 1 and %d", maximumTimeout)
 			}
 			if err := validateFilters(input.Filters); err != nil {
 				return nil, SampleStreamOutput{}, err

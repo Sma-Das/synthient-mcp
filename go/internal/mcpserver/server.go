@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -38,7 +39,16 @@ type API interface {
 	GRPCSchema(context.Context, []string) (synthientsdk.GRPCSchemaResult, error)
 }
 
-func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
+type Options struct {
+	LegacyToolNames bool
+	SampleTimeout   time.Duration
+}
+
+func New(client API, schemaCache *mcp.SchemaCache, optionValues ...Options) *mcp.Server {
+	var options Options
+	if len(optionValues) > 0 {
+		options = optionValues[0]
+	}
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "synthient-mcp-go",
@@ -120,7 +130,10 @@ func New(client API, schemaCache *mcp.SchemaCache) *mcp.Server {
 		return successResult(domainSummary(value)), value, nil
 	})
 
-	registerFeedTools(server, client)
+	registerFeedTools(server, client, options)
+	if options.LegacyToolNames {
+		registerLegacyTools(server, client)
+	}
 
 	return server
 }

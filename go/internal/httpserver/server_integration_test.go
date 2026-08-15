@@ -539,3 +539,44 @@ func TestConcurrentLimitIsPerPrincipal(t *testing.T) {
 	close(release)
 	<-firstDone
 }
+
+func TestRequestRateLimitIsPerPrincipal(t *testing.T) {
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	stats := &telemetry{}
+	limiter := &principalRateLimiter{
+		limit:   2,
+		now:     func() time.Time { return now },
+		windows: make(map[string]principalRateWindow),
+		stats:   stats,
+	}
+	handler := limiter.handler(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	request := func(key string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		request.Header.Set("X-API-Key", key)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	if response := request("first"); response.Code != http.StatusNoContent {
+		t.Fatalf("first request status=%d", response.Code)
+	}
+	if response := request("first"); response.Code != http.StatusNoContent {
+		t.Fatalf("second request status=%d", response.Code)
+	}
+	if response := request("first"); response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") == "" {
+		t.Fatalf("limited request status=%d headers=%v", response.Code, response.Header())
+	}
+	if response := request("second"); response.Code != http.StatusNoContent {
+		t.Fatalf("other principal status=%d", response.Code)
+	}
+	now = now.Add(time.Minute)
+	if response := request("first"); response.Code != http.StatusNoContent {
+		t.Fatalf("reset request status=%d", response.Code)
+	}
+	if stats.httpRateRejected.Load() != 1 {
+		t.Fatalf("rate rejections=%d", stats.httpRateRejected.Load())
+	}
+}
