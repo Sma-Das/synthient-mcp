@@ -41,7 +41,7 @@ func TestClientForwardsCredentialAndCallerIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["ip"] != "2001:db8::1" {
+	if result.IP != "2001:db8::1" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -160,7 +160,7 @@ func TestClientRedactsCredentialFromErrorsAndResponses(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "exact-caller-key") {
 		t.Fatalf("error was not safely redacted: %v", err)
 	}
-	result, err := client.Account(context.Background())
+	result, err := client.request(context.Background(), http.MethodGet, []string{"account", "me"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestClientPreservesLargeJSONIntegers(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := client.Account(context.Background())
+	result, err := client.request(context.Background(), http.MethodGet, []string{"account", "me"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

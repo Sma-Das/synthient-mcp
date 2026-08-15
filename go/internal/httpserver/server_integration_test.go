@@ -57,8 +57,10 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		if request.URL.Path == "/api/v4/account/me" {
 			_ = json.NewEncoder(response).Encode(map[string]any{
-				"api_key": "must-not-leave-the-server",
-				"credits": 42,
+				"api_key":      "must-not-leave-the-server",
+				"email":        "caller@example.com",
+				"organization": map[string]any{"name": "Example Org"},
+				"lookup_quota": map[string]any{"credits": 42, "resets_in": 60},
 			})
 			return
 		}
@@ -67,7 +69,7 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 			return
 		}
 		if request.URL.Path == "/api/v4/lookup/domain/example.com" {
-			_ = json.NewEncoder(response).Encode(map[string]any{"type": "domain", "data": map[string]any{"domain": "example.com"}})
+			_ = json.NewEncoder(response).Encode(map[string]any{"domain": "example.com", "status": "active"})
 			return
 		}
 		_ = json.NewEncoder(response).Encode(map[string]any{
@@ -118,22 +120,29 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
+	var domainSchema map[string]any
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
+		if tool.Name == "lookup_domain" {
+			domainSchema, _ = tool.OutputSchema.(map[string]any)
+		}
 	}
 	wantNames := []string{
-		"synthient_account",
-		"synthient_lookup_domain",
-		"synthient_lookup_ip",
-		"synthient_lookup_ips",
+		"get_account",
+		"lookup_domain",
+		"lookup_ip",
 	}
 	if !reflect.DeepEqual(names, wantNames) {
 		t.Fatalf("tools = %#v", names)
 	}
+	domainProperties, _ := domainSchema["properties"].(map[string]any)
+	if domainProperties["domain"] == nil || domainProperties["status"] == nil || domainProperties["type"] != nil {
+		t.Fatalf("domain output schema = %#v", domainSchema)
+	}
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "synthient_lookup_ip",
-		Arguments: map[string]any{"ip": "8.8.8.8"},
+		Name:      "lookup_ip",
+		Arguments: map[string]any{"ips": []string{"8.8.8.8"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,38 +150,43 @@ func TestMCPServerNegotiatesModernProtocolAndCallsTool(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("tool error: %#v", result.Content)
 	}
+	if len(result.Content) == 0 || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "risk score") {
+		t.Fatalf("tool summary = %#v", result.Content)
+	}
 	output, ok := result.StructuredContent.(map[string]any)
-	if !ok || output["ip"] != "8.8.8.8" {
+	outputIPs, _ := output["ips"].([]any)
+	if !ok || len(outputIPs) != 1 || outputIPs[0].(map[string]any)["ip"] != "8.8.8.8" {
 		t.Fatalf("structured output = %#v", result.StructuredContent)
 	}
-	accountResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "synthient_account"})
+	accountResult, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "get_account"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	accountOutput, ok := accountResult.StructuredContent.(map[string]any)
-	if !ok || accountOutput["credits"] != float64(42) {
+	quota, _ := accountOutput["lookup_quota"].(map[string]any)
+	if !ok || quota["credits"] != float64(42) {
 		t.Fatalf("account output = %#v", accountResult.StructuredContent)
 	}
 	if _, exists := accountOutput["api_key"]; exists {
 		t.Fatal("account tool exposed upstream api_key")
 	}
 	batchResult, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "synthient_lookup_ips",
+		Name:      "lookup_ip",
 		Arguments: map[string]any{"ips": []string{"8.8.8.8", "2001:0db8::1"}},
 	})
 	if err != nil || batchResult.IsError {
 		t.Fatalf("batch result=%#v error=%v", batchResult, err)
 	}
 	domainResult, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "synthient_lookup_domain",
+		Name:      "lookup_domain",
 		Arguments: map[string]any{"domain": "Example.COM."},
 	})
 	if err != nil || domainResult.IsError {
 		t.Fatalf("domain result=%#v error=%v", domainResult, err)
 	}
 	invalidResult, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      "synthient_lookup_ip",
-		Arguments: map[string]any{"ip": "../../account/me"},
+		Name:      "lookup_ip",
+		Arguments: map[string]any{"ips": []string{"../../account/me"}},
 	})
 	if err != nil || !invalidResult.IsError {
 		t.Fatalf("invalid input result=%#v error=%v", invalidResult, err)

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	synthientsdk "github.com/synthient/go-synthient/v2"
+
 	"github.com/Sma-Das/synthient-mcp/go/internal/buildinfo"
 )
 
@@ -62,20 +64,43 @@ func NewClient(baseURL *url.URL, apiKey, forwardedFor string, httpClient HTTPDoe
 	return client
 }
 
-func (c *Client) Account(ctx context.Context) (map[string]any, error) {
-	return c.request(ctx, http.MethodGet, []string{"account", "me"}, nil)
+func (c *Client) Account(ctx context.Context) (synthientsdk.Account, error) {
+	return requestAs[synthientsdk.Account](ctx, c, http.MethodGet, []string{"account", "me"}, nil)
 }
 
-func (c *Client) LookupIP(ctx context.Context, ip string) (map[string]any, error) {
-	return c.request(ctx, http.MethodGet, []string{"lookup", "ip", ip}, nil)
+func (c *Client) LookupIP(ctx context.Context, ip string) (synthientsdk.IP, error) {
+	return requestAs[synthientsdk.IP](ctx, c, http.MethodGet, []string{"lookup", "ip", ip}, nil)
 }
 
-func (c *Client) LookupIPs(ctx context.Context, ips []string) (map[string]any, error) {
-	return c.request(ctx, http.MethodPost, []string{"lookup", "ips"}, map[string]any{"ips": ips})
+func (c *Client) LookupIPs(ctx context.Context, ips []string) ([]synthientsdk.IP, error) {
+	response, err := requestAs[struct {
+		Results []synthientsdk.IP `json:"results"`
+	}](ctx, c, http.MethodPost, []string{"lookup", "ips"}, map[string]any{"ips": ips})
+	if err != nil {
+		return nil, err
+	}
+	return response.Results, nil
 }
 
-func (c *Client) LookupDomain(ctx context.Context, domain string) (map[string]any, error) {
-	return c.request(ctx, http.MethodGet, []string{"lookup", "domain", domain}, nil)
+func (c *Client) LookupDomain(ctx context.Context, domain string) (synthientsdk.Domain, error) {
+	return requestAs[synthientsdk.Domain](ctx, c, http.MethodGet, []string{"lookup", "domain", domain}, nil)
+}
+
+func requestAs[T any](ctx context.Context, client *Client, method string, path []string, body any) (T, error) {
+	var zero T
+	value, err := client.request(ctx, method, path, body)
+	if err != nil {
+		return zero, err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return zero, fmt.Errorf("encode typed Synthient response: %w", err)
+	}
+	var typed T
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return zero, &APIError{Status: http.StatusBadGateway, Message: "Synthient API response did not match the expected contract"}
+	}
+	return typed, nil
 }
 
 func (c *Client) request(ctx context.Context, method string, path []string, body any) (map[string]any, error) {
