@@ -4,19 +4,20 @@ A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 
 This is an independent, community-maintained project. It is not an official Synthient product and is not affiliated with or endorsed by Synthient.
 
-The server uses the official MCP Go SDK and currently negotiates protocol `2026-07-28`. Every caller supplies its own Synthient API key; the service has no server-wide Synthient credential.
+The server uses the official MCP Go SDK and currently negotiates protocol `2026-07-28`. It supports local stdio, per-caller API keys over HTTP, and standards-based OAuth protection for managed remote deployments.
 
 ## Security model
 
-- The service forwards the caller's `x-api-key` only to the configured Synthient origin and refuses upstream redirects.
+- In API-key mode, the service forwards the caller's `x-api-key` only to the configured Synthient origin and refuses upstream redirects.
+- In OAuth mode, MCP access tokens are audience-validated and never passed through; the server uses a separate Synthient credential.
 - The gRPC reflection endpoint is fixed by server configuration, uses TLS, and cannot be overridden by MCP callers.
 - IP and domain path inputs are validated, canonicalized, and escaped before upstream requests.
 - Credential-shaped fields and the literal caller key are removed from upstream results and errors.
-- Host and browser-Origin checks protect the MCP endpoint. Proxy forwarding headers are trusted only from configured proxy CIDRs.
+- Host and browser-Origin checks protect the MCP endpoint. Caller-IP forwarding is disabled by default and trusts proxy headers only when explicitly enabled with configured proxy CIDRs.
 - Request bodies, headers, upstream duration, response size, and concurrent work are bounded.
 - The container runs without root, capabilities, or a writable root filesystem.
 
-The key is validated by Synthient when a tool calls the upstream API. A public deployment should additionally use TLS, an authenticated gateway or standards-based MCP authorization, network restrictions, and edge rate limiting. Host validation is not network access control.
+API-key mode is intended for loopback and controlled self-hosting. Public deployments should use OAuth mode or an authenticated gateway, TLS, network restrictions, and edge rate limiting. Host validation is not network access control.
 
 ## Quick start with Docker
 
@@ -43,7 +44,7 @@ The Compose configuration publishes on `127.0.0.1:3000` by default. Once running
 | `http://localhost:3000/healthz` | Liveness and build identity |
 | `http://localhost:3000/metrics` | Optional low-cardinality metrics |
 
-## MCP client configuration
+## HTTP client configuration
 
 Store the Synthient key in the MCP client's environment or secret store:
 
@@ -67,7 +68,38 @@ Then configure the client to send it with every MCP request:
 }
 ```
 
-Environment-variable expansion is performed by the MCP client. If the client does not support this syntax, use its native secret store. Do not pass `SYNTHIENT_API_KEY` to the server container; it deliberately does not read that variable.
+Environment-variable expansion is performed by the MCP client. If the client does not support this syntax, use its native secret store. In the default `AUTH_MODE=api_key`, the server deliberately ignores a server-side `SYNTHIENT_API_KEY`.
+
+## Local stdio
+
+Build the binary, store the key in the launcher's environment, and run:
+
+```bash
+make binary
+SYNTHIENT_API_KEY='your-synthient-api-key' ./go/synthient-mcp stdio
+```
+
+Example MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "synthient": {
+      "command": "/absolute/path/to/synthient-mcp",
+      "args": ["stdio"],
+      "env": { "SYNTHIENT_API_KEY": "${SYNTHIENT_API_KEY}" }
+    }
+  }
+}
+```
+
+The stdio transport reads credentials from the environment, writes only MCP protocol messages to stdout, and uses the same tools, validation, timeouts, and endpoint restrictions as HTTP.
+
+## OAuth-protected HTTP
+
+Set `AUTH_MODE=oauth` for a managed remote deployment. The server validates JWT signatures through the configured JWKS endpoint, issuer, audience, expiration, subject, and required scopes. It publishes RFC 9728 Protected Resource Metadata and returns its URL in `WWW-Authenticate` challenges so compatible MCP clients can discover the authorization server.
+
+OAuth access tokens and Synthient credentials are deliberately separate. `SYNTHIENT_API_KEY` is a server-side downstream credential only in this mode and is never derived from or replaced by the inbound bearer token.
 
 ## Tools and metering
 
@@ -96,6 +128,8 @@ The server deliberately does not expose snapshot downloads as MCP results. Parqu
 | `ALLOWED_ORIGINS` | empty | Exact trusted cross-origins, including scheme and optional port; same-origin requests remain allowed |
 | `TRUST_PROXY_HOPS` | `0` | Number of trusted hops removed from the right of the forwarding chain |
 | `TRUSTED_PROXY_CIDRS` | empty | Required CIDRs for every trusted hop when `TRUST_PROXY_HOPS` is nonzero |
+| `FORWARD_CLIENT_IP` | `false` | Forward the canonical caller IP to Synthient; enable only when required |
+| `CORS_ENABLED` | `false` | Return exact-origin CORS headers and credential-free preflight responses for `ALLOWED_ORIGINS` |
 | `REQUEST_TIMEOUT_MS` | `15000` | Upstream timeout, from 100 to 120,000 ms |
 | `READ_TIMEOUT_MS` | request timeout + 5 seconds | Complete inbound-request timeout |
 | `WRITE_TIMEOUT_MS` | request timeout + 5 seconds | Complete response-write timeout |
@@ -103,8 +137,16 @@ The server deliberately does not expose snapshot downloads as MCP results. Parqu
 | `SHUTDOWN_TIMEOUT_MS` | `10000` | Graceful-drain deadline |
 | `MAX_HEADER_BYTES` | `32768` | Maximum inbound HTTP header size |
 | `MAX_CONCURRENT_REQUESTS` | `8` | Maximum simultaneous authenticated MCP requests |
+| `MAX_CONCURRENT_PER_PRINCIPAL` | `2` | Per-API-key or per-OAuth-subject concurrency ceiling |
 | `SYNTHIENT_API_BASE_URL` | `https://api.synthient.com/api/v4/` | Test override; HTTP is accepted only for loopback |
 | `SYNTHIENT_GRPC_ENDPOINT` | `grpc.synthient.com:443` | TLS gRPC reflection endpoint fixed at server startup; MCP callers cannot override it |
+| `AUTH_MODE` | `api_key` | `api_key` for per-caller keys or `oauth` for a protected remote resource |
+| `SYNTHIENT_API_KEY` | empty | Server-side downstream key required only for OAuth mode and stdio |
+| `OAUTH_ISSUER_URL` | empty | HTTPS authorization-server issuer required in OAuth mode |
+| `OAUTH_JWKS_URL` | empty | HTTPS JWT verification key set required in OAuth mode |
+| `OAUTH_AUDIENCE` | empty | Required JWT audience for this MCP resource |
+| `MCP_RESOURCE_URL` | empty | Canonical public MCP URL advertised in protected-resource metadata |
+| `OAUTH_REQUIRED_SCOPES` | `mcp:tools` | Comma-separated scopes required on every MCP access token |
 | `METRICS_ENABLED` | `false` | Expose `GET /metrics`; protect it at the network or proxy layer |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 | `LOG_FORMAT` | `text` | `text` or `json` structured logs |
@@ -129,18 +171,19 @@ ALLOWED_HOSTS=mcp.example.com \
 ALLOWED_ORIGINS=https://app.example.com \
 TRUST_PROXY_HOPS=1 \
 TRUSTED_PROXY_CIDRS=127.0.0.0/8 \
+FORWARD_CLIENT_IP=true \
 docker compose up --build -d
 ```
 
-The direct TCP peer and every removed proxy hop must fall within `TRUSTED_PROXY_CIDRS`; short or inconsistent chains fail closed. Use the actual proxy-network CIDR if the proxy does not connect over host loopback. Ensure only the proxy can reach the published port. Terminate TLS and enforce MCP authentication at that proxy.
+Caller-IP forwarding is normally unnecessary. When enabled, the direct TCP peer and every removed proxy hop must fall within `TRUSTED_PROXY_CIDRS`; short or inconsistent chains fail closed. Use the actual proxy-network CIDR if the proxy does not connect over host loopback. Ensure only the proxy can reach the published port.
 
-`ALLOWED_ORIGINS` permits trusted browser origins through CSRF protection; it does not enable CORS. Cross-origin browser clients also require deliberate CORS response headers at an authenticated gateway.
+`ALLOWED_ORIGINS` always controls browser-origin admission. Set `CORS_ENABLED=true` only when those origins must call the server directly; preflights remain exact-host and exact-origin, and wildcard credentialed CORS is never emitted.
 
 ## Observability
 
 Requests receive an `X-Request-ID`. Logs contain method, fixed route, status, duration, version, and safe capacity settings. They intentionally omit API keys, request/response bodies, queried IPs and domains, and forwarding chains.
 
-Optional metrics expose only bounded counters for HTTP traffic, concurrency rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
+Optional metrics expose only bounded counters for HTTP traffic, global and per-principal concurrency rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
 
 ## Development
 

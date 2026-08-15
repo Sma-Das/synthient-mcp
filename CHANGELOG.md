@@ -28,6 +28,13 @@ Notable changes are recorded here. This project follows semantic versioning.
 - Add the official feed catalog, snapshot listing, snapshot metadata, live sampling, and gRPC schema tools.
 - Bound live samples by validated stream, filter count, event size, total bytes, matching event count, and deadline.
 - Restrict gRPC reflection to a TLS endpoint selected by server configuration and return summaries by default.
+- Add local stdio transport using environment-provided Synthient credentials.
+- Add OAuth resource-server mode with JWT verification, scope enforcement, RFC 9728 discovery, and strict token separation.
+- Add exact-origin opt-in CORS and per-principal concurrency limits.
+
+### Privacy
+
+- Disable forwarding caller IP addresses to Synthient by default and discard spoofed forwarding headers unless explicitly enabled.
 
 ### Delivery
 

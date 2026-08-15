@@ -8,7 +8,8 @@ Include the affected version, impact, reproduction steps with synthetic credenti
 
 ## Credential handling
 
-- The server never needs a global `SYNTHIENT_API_KEY`; callers provide their own `x-api-key` header.
+- API-key mode does not use a global `SYNTHIENT_API_KEY`; callers provide their own `x-api-key` header.
+- OAuth mode uses a server-side Synthient key that is separate from audience-bound MCP access tokens. Inbound bearer tokens are never passed through to Synthient.
 - Keep keys in the MCP client's environment, OS keychain, or secret manager.
 - Do not store keys in `.env`, `.synthient`, client configuration committed to Git, logs, screenshots, or issue reports.
 - Rotate and revoke a key immediately if it may have reached a public repository, log, untrusted build service, or third party.
@@ -18,7 +19,7 @@ The Docker build context is deny-by-default. Changes to `.dockerignore` or Docke
 
 ## Deployment expectations
 
-Local deployments should remain bound to loopback. Remote deployments should use TLS, network restrictions, an authenticated gateway or standards-based MCP authorization, edge rate limiting, and a correctly configured trusted-proxy CIDR list.
+Local API-key deployments should remain bound to loopback. Remote deployments should use TLS, OAuth mode or an authenticated gateway, network restrictions, and edge rate limiting. Configure trusted-proxy CIDRs only when caller-IP forwarding is explicitly required.
 
 `ALLOWED_HOSTS` and Origin validation mitigate HTTP attacks; neither replaces network access control or authentication. The optional metrics endpoint should remain private.
 

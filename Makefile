@@ -2,7 +2,7 @@ GO_DIR := go
 GOVULNCHECK_VERSION := v1.7.0
 STATICCHECK_VERSION := v0.7.0
 
-.PHONY: all fmt fmt-check tidy-check vet staticcheck test race cover vuln build docker-check docker-build smoke ci
+.PHONY: all fmt fmt-check tidy-check vet staticcheck test race cover vuln build binary docker-check docker-build smoke ci
 
 all: ci
 
@@ -37,6 +37,9 @@ vuln:
 
 build:
 	cd $(GO_DIR) && go build ./...
+
+binary:
+	cd $(GO_DIR) && go build -o synthient-mcp ./cmd/server
 
 docker-check:
 	docker build --check .
