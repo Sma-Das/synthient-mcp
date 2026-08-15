@@ -88,7 +88,10 @@ func newHandler(cfg config.Config, logger *slog.Logger, verifier auth.TokenVerif
 				apiClient,
 				stats,
 			).WithGRPCEndpoint(cfg.SynthientGRPCEndpoint)
-			return mcpserver.New(client, schemaCache)
+			return mcpserver.New(client, schemaCache, mcpserver.Options{
+				LegacyToolNames: cfg.LegacyToolNames,
+				SampleTimeout:   cfg.StreamTimeout,
+			})
 		},
 		&mcp.StreamableHTTPOptions{
 			Stateless:                    true,

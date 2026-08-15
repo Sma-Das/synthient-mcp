@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestFeedSnapshotsAndMetadataPaths(t *testing.T) {
@@ -35,6 +38,30 @@ func TestFeedSnapshotsAndMetadataPaths(t *testing.T) {
 	if err != nil || meta.Rows != 42 {
 		t.Fatalf("meta=%#v error=%v", meta, err)
 	}
+}
+
+func TestSampleStreamUsesTheOperationContextDeadline(t *testing.T) {
+	upstream := newDelayedStreamServer(t, 75*time.Millisecond)
+	defer upstream.Close()
+	baseURL, err := url.Parse(upstream.URL + "/api/v4/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(baseURL, "test-key", "", &http.Client{Timeout: 10 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	events, _, err := client.SampleStream(ctx, "proxies", 1, 1024, nil)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("events=%#v error=%v", events, err)
+	}
+}
+
+func newDelayedStreamServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		time.Sleep(delay)
+		_, _ = response.Write([]byte("{\"ip\":\"192.0.2.1\"}\n"))
+	}))
 }
 
 func TestSampleStreamFiltersAndBoundsEvents(t *testing.T) {

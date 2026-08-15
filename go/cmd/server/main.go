@@ -77,7 +77,10 @@ func runStdioCommand() error {
 func runStdio(ctx context.Context, cfg config.Config, apiKey string) error {
 	httpClient := &http.Client{Timeout: cfg.RequestTimeout}
 	client := synthient.NewClient(cfg.SynthientBaseURL, apiKey, "", httpClient).WithGRPCEndpoint(cfg.SynthientGRPCEndpoint)
-	server := mcpserver.New(client, mcp.NewSchemaCache())
+	server := mcpserver.New(client, mcp.NewSchemaCache(), mcpserver.Options{
+		LegacyToolNames: cfg.LegacyToolNames,
+		SampleTimeout:   cfg.StreamTimeout,
+	})
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("stdio MCP server: %w", err)
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func lookupValues(values map[string]string) func(string) (string, bool) {
@@ -29,8 +30,24 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.MaxConcurrentRequests != 8 || cfg.MaxHeaderBytes != 32768 || cfg.ReadTimeout <= cfg.RequestTimeout {
 		t.Fatalf("unexpected limits: %+v", cfg)
 	}
-	if cfg.AuthMode != "api_key" || cfg.ForwardClientIP || cfg.CORSEnabled || cfg.MaxConcurrentPerUser != 2 {
+	if cfg.AuthMode != "api_key" || cfg.ForwardClientIP || cfg.CORSEnabled || cfg.LegacyToolNames || cfg.MaxConcurrentPerUser != 2 {
 		t.Fatalf("unexpected security defaults: %+v", cfg)
+	}
+	if cfg.StreamTimeout != 15*time.Second || cfg.WriteTimeout != 20*time.Second {
+		t.Fatalf("unexpected operation timeouts: %+v", cfg)
+	}
+}
+
+func TestLoadFromUsesSeparateStreamTimeout(t *testing.T) {
+	cfg, err := LoadFrom(lookupValues(map[string]string{"STREAM_TIMEOUT_MS": "30000"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StreamTimeout != 30*time.Second || cfg.WriteTimeout != 35*time.Second || cfg.ReadTimeout != 35*time.Second {
+		t.Fatalf("operation timeouts = %+v", cfg)
+	}
+	if _, err := LoadFrom(lookupValues(map[string]string{"STREAM_TIMEOUT_MS": "30000", "WRITE_TIMEOUT_MS": "30000"})); err == nil {
+		t.Fatal("write timeout that cannot complete a stream succeeded")
 	}
 }
 
