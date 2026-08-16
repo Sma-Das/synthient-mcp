@@ -1,14 +1,28 @@
-# Synthient MCP Server
+# Synthient MCP Server in Go — IP, Domain, and Threat Intelligence
 
-[![Docker Hub image](https://img.shields.io/docker/v/smadas/synthient-mcp?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/smadas/synthient-mcp)
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-2026--07--28-6f42c1)](https://modelcontextprotocol.io/)
+[![CI](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml)
+[![Docker pulls](https://img.shields.io/docker/pulls/smadas/synthient-mcp?logo=docker)](https://hub.docker.com/r/smadas/synthient-mcp)
+[![GitHub release](https://img.shields.io/github/v/release/Sma-Das/synthient-mcp?sort=semver)](https://github.com/Sma-Das/synthient-mcp/releases/latest)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-yellow.svg)](LICENSE)
 
-A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for the [Synthient](https://synthient.com/) intelligence API. It exposes account, IP, domain, snapshot, live-feed, and protobuf intelligence over stateless Streamable HTTP.
+A production-oriented, Dockerized **Synthient MCP server written in Go**. Connect an MCP-compatible AI assistant or security automation workflow to the [Synthient](https://synthient.com/) intelligence API for account usage, IPv4 and IPv6 enrichment, domain honeypot intelligence, historical feed snapshots, bounded live threat-feed samples, and gRPC schema discovery.
 
 This is an independent, community-maintained project. It is not an official Synthient product and is not affiliated with or endorsed by Synthient.
 
 Release container images are published on [Docker Hub as `smadas/synthient-mcp`](https://hub.docker.com/r/smadas/synthient-mcp).
 
 The server uses the official MCP Go SDK and currently negotiates protocol `2026-07-28`. It supports local stdio, per-caller API keys over HTTP, and standards-based OAuth protection for managed remote deployments.
+
+## Why use this Synthient MCP server?
+
+- **Broad intelligence coverage:** account quota, batch IP enrichment, domain intelligence, snapshot catalogs, live-feed samples, and protobuf schema inspection.
+- **Native Go binary:** fast startup, low runtime overhead, and checksummed releases for Linux, macOS, and Windows.
+- **Current MCP transports:** local stdio and stateless Streamable HTTP through the official MCP Go SDK.
+- **IPv4 and IPv6 batching:** enrich up to 1,000 validated addresses in one tool call with discounted batch billing.
+- **Security-focused deployment:** bounded requests and streams, credential redaction, strict origin handling, non-root containers, OAuth support, and per-principal limits.
+- **LLM-friendly results:** typed structured content plus concise text summaries, with optional legacy tool aliases for client migrations.
 
 ## Security model
 
@@ -193,6 +207,24 @@ Caller-IP forwarding is normally unnecessary. When enabled, the direct TCP peer 
 Requests receive an `X-Request-ID`. Logs contain method, fixed route, status, duration, version, and safe capacity settings. They intentionally omit API keys, request/response bodies, queried IPs and domains, and forwarding chains.
 
 Optional metrics expose only bounded counters for HTTP traffic, global concurrency rejection, per-principal concurrency and rate rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
+
+## Frequently asked questions
+
+### Can I use this Synthient MCP server with Claude, Cursor, VS Code, or another AI client?
+
+Yes. Any client that supports MCP stdio or Streamable HTTP can use the server. Use stdio for a local process or the HTTP transport for a self-hosted or managed remote deployment.
+
+### What Synthient intelligence does the server expose?
+
+It exposes account quota, IPv4 and IPv6 enrichment, batch IP lookups, domain honeypot intelligence, daily and hourly feed snapshots, bounded live-feed sampling, and allowlisted gRPC schema discovery.
+
+### Does the Synthient MCP server support Docker and native binaries?
+
+Yes. Multi-architecture Linux images are available from [the `smadas/synthient-mcp` Docker Hub repository](https://hub.docker.com/r/smadas/synthient-mcp). Checksummed native archives for Linux, macOS, and Windows are available from [the latest GitHub release](https://github.com/Sma-Das/synthient-mcp/releases/latest).
+
+### Is this an official Synthient MCP server?
+
+No. This is an independent, community-maintained implementation that uses Synthient's public APIs and official typed contracts. It is not affiliated with or endorsed by Synthient.
 
 ## Development
 
