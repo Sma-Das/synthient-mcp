@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. This project follows semantic versioning.
 
-## 0.2.0 - Unreleased
+## 1.0.0 - 2026-08-16
 
 ### Security
 
