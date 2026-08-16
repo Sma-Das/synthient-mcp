@@ -1,8 +1,12 @@
 # Synthient MCP Server
 
+[![Docker Hub image](https://img.shields.io/docker/v/smadas/synthient-mcp?sort=semver&label=Docker%20Hub)](https://hub.docker.com/r/smadas/synthient-mcp)
+
 A Dockerized Go [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for the [Synthient](https://synthient.com/) intelligence API. It exposes account, IP, domain, snapshot, live-feed, and protobuf intelligence over stateless Streamable HTTP.
 
 This is an independent, community-maintained project. It is not an official Synthient product and is not affiliated with or endorsed by Synthient.
+
+Release container images are published on [Docker Hub as `smadas/synthient-mcp`](https://hub.docker.com/r/smadas/synthient-mcp).
 
 The server uses the official MCP Go SDK and currently negotiates protocol `2026-07-28`. It supports local stdio, per-caller API keys over HTTP, and standards-based OAuth protection for managed remote deployments.
 
@@ -19,9 +23,9 @@ The server uses the official MCP Go SDK and currently negotiates protocol `2026-
 
 API-key mode is intended for loopback and controlled self-hosting. Public deployments should use OAuth mode or an authenticated gateway, TLS, network restrictions, and an edge rate limit in addition to the server's per-principal limit. Host validation is not network access control.
 
-## Quick start with Docker
+## Docker Hub quick start
 
-Run the published image on loopback only:
+Run the published [`smadas/synthient-mcp` Docker image](https://hub.docker.com/r/smadas/synthient-mcp) on loopback only:
 
 ```bash
 docker pull smadas/synthient-mcp:latest
