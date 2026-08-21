@@ -6,8 +6,8 @@ require (
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/synthient/go-synthient/v2 v2.3.1
-	google.golang.org/protobuf v1.36.11
+	github.com/synthient/go-synthient/v2 v2.4.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
