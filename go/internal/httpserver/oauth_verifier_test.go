@@ -167,3 +167,32 @@ func TestOIDCVerifierRejectsOversizedJWKS(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestOIDCVerifierJWKSSizeCapIsExact(t *testing.T) {
+	fixture := newSigningFixture(t)
+	previous := maxJWKSResponseBytes
+	defer func() { maxJWKSResponseBytes = previous }()
+	token := fixture.token(t, map[string]any{"iss": testIssuer, "aud": testAudience, "sub": "user", "exp": time.Now().Add(time.Hour).Unix()})
+
+	for _, test := range []struct {
+		name    string
+		padding int
+		valid   bool
+	}{
+		{name: "exactly at the cap", padding: 0, valid: true},
+		{name: "one byte over the cap", padding: 1, valid: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			maxJWKSResponseBytes = int64(len(fixture.jwks))
+			jwksServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = response.Write(fixture.jwks)
+				_, _ = response.Write([]byte(strings.Repeat(" ", test.padding)))
+			}))
+			defer jwksServer.Close()
+			_, err := oidcTokenVerifier(oauthTestConfig(jwksServer.URL))(context.Background(), token, nil)
+			if (err == nil) != test.valid {
+				t.Fatalf("error = %v; want valid=%t", err, test.valid)
+			}
+		})
+	}
+}

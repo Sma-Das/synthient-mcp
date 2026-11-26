@@ -70,7 +70,9 @@ jobs:
             exit 1
           fi
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          if ! git merge-base --is-ancestor "$commit" origin/main; then
+          # Fully-qualified ref: a tag named origin/main must not shadow it.
+          main_commit="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
+          if ! git merge-base --is-ancestor "$commit" "$main_commit"; then
             echo "Tag $RELEASE_REF ($commit) is not on main" >&2
             exit 1
           fi
@@ -81,7 +83,16 @@ jobs:
 
           # Floating tags (latest, MAJOR, MAJOR.MINOR) only move forward, so
           # republishing an older release cannot roll them back.
-          stable_tags="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+          # Rank only stable semver tags whose commits are on main, so a stray
+          # tag elsewhere cannot suppress or hijack the floating tags.
+          stable_tags=""
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || continue
+            tag_commit="$(git rev-parse --verify "refs/tags/${tag}^{commit}")"
+            git merge-base --is-ancestor "$tag_commit" "$main_commit" || continue
+            stable_tags+="${tag}"$'\n'
+          done < <(git tag --list 'v*')
+          stable_tags="${stable_tags%$'\n'}"
           highest() { sort -V | tail -n 1; }
           major="${version%%.*}"
           minor="${version%.*}"
@@ -137,6 +148,10 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE_NAME }}
+          # The semver rules would otherwise add latest automatically; it is
+          # controlled solely by the explicit rule below.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.verify.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.latest_minor == 'true' }}
@@ -224,8 +239,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           STABLE: ${{ needs.verify.outputs.stable }}
           LATEST: ${{ needs.verify.outputs.latest }}
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
         run: |
           set -euo pipefail
+          # The binaries were built from the verified commit; refuse to attach
+          # them to a tag that has since been moved.
+          remote_refs="$(git ls-remote origin "refs/tags/${RELEASE_REF}" "refs/tags/${RELEASE_REF}^{}")"
+          remote_commit="$(awk -v peeled="refs/tags/${RELEASE_REF}^{}" '$2 == peeled { print $1 }' <<<"$remote_refs")"
+          if [[ -z "$remote_commit" ]]; then
+            remote_commit="$(awk -v ref="refs/tags/${RELEASE_REF}" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          fi
+          if [[ "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
+            echo "Tag $RELEASE_REF now points to ${remote_commit:-nothing}, not verified commit $VERIFIED_COMMIT" >&2
+            exit 1
+          fi
+
           release_flags=()
           if [[ "$STABLE" != "true" ]]; then release_flags+=(--prerelease); fi
           if [[ "$LATEST" != "true" ]]; then release_flags+=(--latest=false); fi

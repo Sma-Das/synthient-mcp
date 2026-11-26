@@ -295,11 +295,10 @@ func sanitizeValue(value any, secret string) any {
 	case map[string]any:
 		cleaned := make(map[string]any, len(value))
 		for key, item := range value {
-			if sensitiveKey(key) {
+			// Drop credential-bearing property names outright: rewriting them
+			// could collide with another key and silently overwrite its value.
+			if sensitiveKey(key) || (secret != "" && strings.Contains(key, secret)) {
 				continue
-			}
-			if secret != "" {
-				key = strings.ReplaceAll(key, secret, "[REDACTED]")
 			}
 			cleaned[key] = sanitizeValue(item, secret)
 		}

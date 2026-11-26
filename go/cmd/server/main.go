@@ -178,7 +178,7 @@ func newLogger(cfg config.Config) *slog.Logger {
 func healthcheckHost(bind string) string {
 	host := strings.Trim(strings.TrimSpace(bind), "[]")
 	switch host {
-	case "", "0.0.0.0", "localhost":
+	case "", "0.0.0.0":
 		return "127.0.0.1"
 	case "::":
 		return "::1"
@@ -195,7 +195,9 @@ func healthcheck() error {
 		}
 		port = parsed
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
+	// Never route the liveness probe through HTTP_PROXY: it must reach this
+	// process, not whatever a proxy answers for the bind address.
+	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	response, err := client.Get("http://" + net.JoinHostPort(healthcheckHost(os.Getenv("HOST")), strconv.Itoa(port)) + "/healthz")
 	if err != nil {
 		return fmt.Errorf("healthcheck: %w", err)

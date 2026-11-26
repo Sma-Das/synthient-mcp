@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -23,10 +24,13 @@ const (
 	defaultSampleTimeout = 10
 	maxSampleTimeout     = 15
 	maxSampleOutputBytes = 1 << 20
-	maxDescriptorBytes   = 1 << 20
-	maxSchemaFiles       = 1000
-	maxSchemaServices    = 500
-	maxSchemaMethods     = 5000
+	// sampleEnvelopeBytes is reserved from the sample budget for the response
+	// fields around the events and the MCP result envelope.
+	sampleEnvelopeBytes = 4 << 10
+	maxDescriptorBytes  = 1 << 20
+	maxSchemaFiles      = 1000
+	maxSchemaServices   = 500
+	maxSchemaMethods    = 5000
 )
 
 type FeedStream struct {
@@ -183,7 +187,7 @@ func registerFeedTools(server *mcp.Server, client API, options Options) {
 			}
 			sampleCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 			defer cancel()
-			events, truncated, err := client.SampleStream(sampleCtx, stream.Name, count, maxSampleOutputBytes, input.Filters)
+			events, truncated, err := client.SampleStream(sampleCtx, stream.Name, count, maxSampleOutputBytes-sampleEnvelopeBytes, input.Filters)
 			if err != nil {
 				return nil, SampleStreamOutput{}, err
 			}
@@ -284,17 +288,20 @@ func grpcSchemaOutput(result synthientsdk.GRPCSchemaResult, includeDescriptor bo
 	if len(files) > maxSchemaFiles {
 		return GRPCSchemaOutput{}, fmt.Errorf("schema contains %d files, above the %d-file limit; request specific symbols", len(files), maxSchemaFiles)
 	}
-	services := summarizeServices(result.DescriptorSet)
-	methods := 0
-	for _, service := range services {
-		methods += len(service.Methods)
-	}
-	if len(services) > maxSchemaServices || methods > maxSchemaMethods {
-		return GRPCSchemaOutput{}, fmt.Errorf("schema exceeds the %d-service or %d-method summary limit; request specific symbols", maxSchemaServices, maxSchemaMethods)
+	services, err := summarizeServices(result.DescriptorSet)
+	if err != nil {
+		return GRPCSchemaOutput{}, err
 	}
 	output := GRPCSchemaOutput{Endpoint: result.Endpoint, Symbols: result.Symbols, Services: services}
 	for _, file := range files {
 		output.Files = append(output.Files, GRPCFile{Name: file.GetName(), Package: file.GetPackage()})
+	}
+	// Names and reflected symbols have no individual caps, so bound the
+	// serialized summary as a whole.
+	if summary, err := json.Marshal(output); err != nil {
+		return GRPCSchemaOutput{}, fmt.Errorf("encode schema summary: %w", err)
+	} else if len(summary) > maxDescriptorBytes {
+		return GRPCSchemaOutput{}, fmt.Errorf("schema summary exceeds the 1 MiB MCP output limit; request specific symbols")
 	}
 	if includeDescriptor {
 		descriptor, err := protojson.Marshal(result.DescriptorSet)
@@ -324,15 +331,26 @@ func safeGRPCError(err error) error {
 	return fmt.Errorf("synthient gRPC reflection failed")
 }
 
-func summarizeServices(set *descriptorpb.FileDescriptorSet) []GRPCService {
+// summarizeServices lists services and methods, failing as soon as the
+// service or method budget is exceeded rather than after building it all.
+func summarizeServices(set *descriptorpb.FileDescriptorSet) ([]GRPCService, error) {
+	errTooLarge := fmt.Errorf("schema exceeds the %d-service or %d-method summary limit; request specific symbols", maxSchemaServices, maxSchemaMethods)
 	services := []GRPCService{}
+	methods := 0
 	for _, file := range set.GetFile() {
 		for _, service := range file.GetService() {
+			if len(services) >= maxSchemaServices {
+				return nil, errTooLarge
+			}
+			methods += len(service.GetMethod())
+			if methods > maxSchemaMethods {
+				return nil, errTooLarge
+			}
 			name := service.GetName()
 			if file.GetPackage() != "" {
 				name = file.GetPackage() + "." + name
 			}
-			summary := GRPCService{Name: name}
+			summary := GRPCService{Name: name, Methods: make([]GRPCMethod, 0, len(service.GetMethod()))}
 			for _, method := range service.GetMethod() {
 				summary.Methods = append(summary.Methods, GRPCMethod{Name: method.GetName(), Input: strings.TrimPrefix(method.GetInputType(), "."), Output: strings.TrimPrefix(method.GetOutputType(), ".")})
 			}
@@ -340,7 +358,7 @@ func summarizeServices(set *descriptorpb.FileDescriptorSet) []GRPCService {
 		}
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
-	return services
+	return services, nil
 }
 
 func contains(values []string, target string) bool {

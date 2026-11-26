@@ -166,3 +166,95 @@ func TestAccessLogRecordsRoutePatternNotRawPath(t *testing.T) {
 		t.Fatalf("log = %q", logs.String())
 	}
 }
+
+func TestRateLimiterNeverEvictsAnExhaustedQuota(t *testing.T) {
+	now := time.Date(2026, time.November, 26, 12, 0, 0, 0, time.UTC)
+	limiter := &principalRateLimiter{
+		limit:   2,
+		now:     func() time.Time { return now },
+		windows: make(map[string]principalRateWindow, maxTrackedRatePrincipals),
+		stats:   &telemetry{},
+	}
+	// Every tracked principal, including the one under test, is exhausted.
+	for index := range maxTrackedRatePrincipals - 1 {
+		limiter.windows[fmt.Sprintf("api-key:flood-%d", index)] = principalRateWindow{count: 2, resetAt: now.Add(time.Second)}
+	}
+	exhausted := requestPrincipal(func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		request.Header.Set("X-API-Key", "exhausted")
+		return request
+	}())
+	limiter.windows[exhausted] = principalRateWindow{count: 2, resetAt: now.Add(time.Millisecond)}
+
+	handler := limiter.handler(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	call := func(key string) int {
+		request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		request.Header.Set("X-API-Key", key)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+	if code := call("newcomer"); code != http.StatusTooManyRequests {
+		t.Fatalf("newcomer status=%d; want 429 while every window is exhausted", code)
+	}
+	if window := limiter.windows[exhausted]; window.count != 2 {
+		t.Fatalf("exhausted window was reset: %#v", window)
+	}
+	if code := call("exhausted"); code != http.StatusTooManyRequests {
+		t.Fatalf("exhausted principal status=%d", code)
+	}
+}
+
+type trackingBody struct{ read bool }
+
+func (body *trackingBody) Read([]byte) (int, error) {
+	body.read = true
+	return 0, io.EOF
+}
+
+func (*trackingBody) Close() error { return nil }
+
+func TestOverLimitRequestIsRejectedBeforeItsBodyIsRead(t *testing.T) {
+	cfg := config.Config{AllowedHosts: []string{"example.com"}, MaxRequestsPerMinute: 1, MaxConcurrentRequests: 8, MaxConcurrentPerUser: 2}
+	handler := NewHandler(cfg)
+	send := func(body io.ReadCloser) int {
+		request := httptest.NewRequest(http.MethodPost, "http://example.com/mcp", nil)
+		request.Body = body
+		request.Header.Set("X-API-Key", "key")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+	send(io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	body := &trackingBody{}
+	if code := send(body); code != http.StatusTooManyRequests || body.read {
+		t.Fatalf("status=%d bodyRead=%t; want 429 without reading the body", code, body.read)
+	}
+}
+
+func TestForwardedProtoMustBeASingleValue(t *testing.T) {
+	cfg := config.Config{TrustProxyHops: 1, TrustedProxyCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
+	for _, test := range []struct {
+		name   string
+		values []string
+		want   bool
+	}{
+		{name: "single https", values: []string{"https"}, want: true},
+		{name: "duplicated header", values: []string{"https", "http"}, want: false},
+		{name: "comma-joined", values: []string{"https, http"}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "http://service.example/mcp", nil)
+			request.RemoteAddr = "10.0.0.2:5000"
+			for _, value := range test.values {
+				request.Header.Add("X-Forwarded-Proto", value)
+			}
+			if got := sameOrigin(cfg, request, "https://service.example"); got != test.want {
+				t.Fatalf("sameOrigin = %t; want %t", got, test.want)
+			}
+		})
+	}
+}

@@ -18,8 +18,11 @@ import (
 
 const (
 	maxStreamEventBytes = 256 << 10
-	maxStreamReadBytes  = 8 << 20
 )
+
+// maxStreamReadBytes bounds the bytes read from one live stream. It is a
+// variable so tests can exercise the boundary.
+var maxStreamReadBytes = int64(8 << 20)
 
 func (c *Client) FeedSnapshots(ctx context.Context, stream string, limit int, cursor string) (synthientsdk.FeedSnapshotsPage, error) {
 	query := url.Values{}
@@ -81,25 +84,25 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 		return nil, false, &APIError{Status: response.StatusCode, Message: streamError(response.StatusCode, decoded)}
 	}
 
-	scanner := bufio.NewScanner(response.Body)
+	// Enforce the read budget below the scanner, on bytes actually taken from
+	// the connection, so read-ahead, CRLF delimiters, and padding all count.
+	body := &countingReader{reader: io.LimitReader(response.Body, maxStreamReadBytes)}
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 64<<10), maxStreamEventBytes)
 	events := make([]map[string]any, 0, count)
-	readBytes := 0
 	outputBytes := 0
 	for scanner.Scan() {
-		raw := scanner.Bytes()
-		// Count bytes as received, including the line delimiter, so the read
-		// budget cannot be stretched with padding.
-		readBytes += len(raw) + 1
-		if readBytes > maxStreamReadBytes {
-			return events, true, nil
-		}
-		line := bytes.TrimSpace(raw)
+		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
 		event, err := decodeObject(line)
 		if err != nil {
+			if body.count >= maxStreamReadBytes {
+				// The budget cut the final line short; that is truncation, not
+				// a malformed upstream event.
+				return events, true, nil
+			}
 			return events, false, fmt.Errorf("decode Synthient stream event: %w", err)
 		}
 		event = sanitizeObject(event, c.apiKey)
@@ -124,7 +127,18 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return events, false, fmt.Errorf("read Synthient stream: %w", err)
 	}
-	return events, false, nil
+	return events, body.count >= maxStreamReadBytes, nil
+}
+
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (reader *countingReader) Read(buffer []byte) (int, error) {
+	n, err := reader.reader.Read(buffer)
+	reader.count += int64(n)
+	return n, err
 }
 
 func requestAsQuery[T any](ctx context.Context, client *Client, method string, path []string, query url.Values, body any) (T, error) {

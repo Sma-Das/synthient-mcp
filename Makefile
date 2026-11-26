@@ -8,13 +8,14 @@ all: ci
 
 # Resolve gofmt from the active Go toolchain so fmt-check cannot pass vacuously
 # when gofmt is missing from PATH.
-GOFMT := $(shell go env GOROOT)/bin/gofmt
+# Resolved inside the module so its toolchain selection applies.
+GOFMT := $(shell cd $(GO_DIR) && go env GOROOT)/bin/gofmt
 
 fmt:
-	cd $(GO_DIR) && $(GOFMT) -w .
+	cd $(GO_DIR) && "$(GOFMT)" -w .
 
 fmt-check:
-	@files="$$(cd $(GO_DIR) && $(GOFMT) -l .)" || exit 1; test -z "$$files" || { echo "gofmt required:"; echo "$$files"; exit 1; }
+	@files="$$(cd $(GO_DIR) && "$(GOFMT)" -l .)" || exit 1; test -z "$$files" || { echo "gofmt required:"; echo "$$files"; exit 1; }
 
 tidy-check:
 	cd $(GO_DIR) && go mod tidy -diff
@@ -59,7 +60,7 @@ SMOKE_RUN_ARGS ?=
 
 smoke:
 	@set -e; \
-		image="synthient-mcp-go:smoke-$$$$-$$(date +%s)"; \
+		image="synthient-mcp-go:smoke-$$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"; \
 		container=""; \
 		cleanup() { \
 			if [ -n "$$container" ]; then docker rm -f "$$container" >/dev/null 2>&1 || true; fi; \

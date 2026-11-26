@@ -69,7 +69,7 @@ func TestHealthcheckHostFollowsBindAddress(t *testing.T) {
 	for bind, want := range map[string]string{
 		"":          "127.0.0.1",
 		"0.0.0.0":   "127.0.0.1",
-		"localhost": "127.0.0.1",
+		"localhost": "localhost",
 		"::":        "::1",
 		"[::]":      "::1",
 		"::1":       "::1",

@@ -208,7 +208,7 @@ docker compose up --build -d
 
 Caller-IP forwarding is normally unnecessary. When enabled, the direct TCP peer and every removed proxy hop must fall within `TRUSTED_PROXY_CIDRS`; short or inconsistent chains fail closed. Use the actual proxy-network CIDR if the proxy does not connect over host loopback. Ensure only the proxy can reach the published port.
 
-`ALLOWED_ORIGINS` always controls cross-origin browser admission. Same-origin requests are always admitted. Behind a TLS-terminating proxy, the scheme is taken from `X-Forwarded-Proto` only when the direct peer is in `TRUSTED_PROXY_CIDRS` and `TRUST_PROXY_HOPS` is at least 1. Set `CORS_ENABLED=true` only when those origins must call the server directly. Preflights remain exact-host and exact-origin, allow the MCP `Mcp-Method` and `Mcp-Name` headers, and expose `WWW-Authenticate` so browser clients can discover OAuth metadata. Wildcard credentialed CORS is never emitted.
+`ALLOWED_ORIGINS` always controls cross-origin browser admission. Same-origin requests are always admitted. Behind a TLS-terminating proxy, the scheme is taken from `X-Forwarded-Proto` only when the direct peer is in `TRUSTED_PROXY_CIDRS`, `TRUST_PROXY_HOPS` is at least 1, and the header has exactly one value. The trusted proxy must strip any inbound `X-Forwarded-Proto` and set its own. Set `CORS_ENABLED=true` only when those origins must call the server directly. Preflights remain exact-host and exact-origin, allow the MCP `Mcp-Method` and `Mcp-Name` headers, and expose `WWW-Authenticate` so browser clients can discover OAuth metadata. Wildcard credentialed CORS is never emitted.
 
 ## Observability
 

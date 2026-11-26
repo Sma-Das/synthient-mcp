@@ -123,11 +123,14 @@ func newHandler(cfg config.Config, logger *slog.Logger, verifier auth.TokenVerif
 	if perPrincipal <= 0 {
 		perPrincipal = 2
 	}
-	mcpRoute := limitConcurrentPerPrincipal(perPrincipal, stats, mcpHandler)
+	// The batch guard reads the request body, so it runs inside the
+	// per-principal limiters: an over-limit caller is rejected before any of
+	// its body is read.
+	mcpRoute := rejectJSONRPCBatches(maxRequestBody, mcpHandler)
+	mcpRoute = limitConcurrentPerPrincipal(perPrincipal, stats, mcpRoute)
 	if cfg.MaxRequestsPerMinute > 0 {
 		mcpRoute = limitRatePerPrincipal(cfg.MaxRequestsPerMinute, stats, mcpRoute)
 	}
-	mcpRoute = rejectJSONRPCBatches(maxRequestBody, mcpRoute)
 	mcpRoute = protectMCP(cfg, mcpRoute)
 	if cfg.AuthMode == "oauth" {
 		if verifier == nil {
@@ -200,8 +203,13 @@ func sameOrigin(cfg config.Config, request *http.Request, origin string) bool {
 	if request.TLS != nil {
 		scheme = "https"
 	} else if cfg.TrustProxyHops > 0 && forwarding.TrustedPeer(request, cfg.TrustedProxyCIDRs) {
-		if proto := strings.ToLower(strings.TrimSpace(request.Header.Get("X-Forwarded-Proto"))); proto == "https" || proto == "http" {
-			scheme = proto
+		// The trusted edge must overwrite X-Forwarded-Proto. A duplicated or
+		// comma-joined value means a client-supplied value may have survived,
+		// so it is ignored and the connection's own scheme is used.
+		if values := request.Header.Values("X-Forwarded-Proto"); len(values) == 1 {
+			if proto := strings.ToLower(strings.TrimSpace(values[0])); proto == "https" || proto == "http" {
+				scheme = proto
+			}
 		}
 	}
 	return origin == (&url.URL{Scheme: scheme, Host: host}).String()
@@ -342,8 +350,10 @@ func (limiter *principalRateLimiter) handler(next http.Handler) http.Handler {
 			delete(limiter.windows, principal)
 			exists = false
 		}
-		if !exists && len(limiter.windows) >= maxTrackedRatePrincipals {
-			limiter.evictLocked(now)
+		if !exists && len(limiter.windows) >= maxTrackedRatePrincipals && !limiter.evictLocked(now) {
+			limiter.mutex.Unlock()
+			limiter.reject(response, 1, "The server is tracking its maximum number of active principals; retry shortly.")
+			return
 		}
 		if !exists {
 			window = principalRateWindow{resetAt: now.Add(time.Minute)}
@@ -362,27 +372,40 @@ func (limiter *principalRateLimiter) handler(next http.Handler) http.Handler {
 	})
 }
 
-// evictLocked frees room for a new principal. It drops expired windows and,
-// if the table is still full, the window closest to expiry. In api_key mode
-// principals are unverified until Synthient sees the key, so refusing new
-// principals when the table fills would let a flood of random keys lock out
-// every legitimate caller; evicting instead only ever grants an evicted
-// principal a fresh window early.
-func (limiter *principalRateLimiter) evictLocked(now time.Time) {
-	var oldestKey string
-	var oldestReset time.Time
+// evictLocked frees room for a new principal and reports whether it did. It
+// drops expired windows and, if the table is still full, the window closest to
+// expiry among those that still have quota left. Exhausted windows are never
+// evicted, so a principal at its limit stays limited until its window ends.
+// In api_key mode principals are unverified until Synthient sees the key, so
+// simply refusing new principals when the table fills would let a flood of
+// random keys lock out every legitimate caller. Evicting a window that still
+// has quota grants that principal at most one fresh window early.
+//
+// The scan is O(n) under the lock, but runs only while the table is full,
+// and global and per-principal concurrency limits bound how often that is.
+func (limiter *principalRateLimiter) evictLocked(now time.Time) bool {
+	var victim string
+	var victimReset time.Time
 	for key, candidate := range limiter.windows {
 		if !now.Before(candidate.resetAt) {
 			delete(limiter.windows, key)
 			continue
 		}
-		if oldestKey == "" || candidate.resetAt.Before(oldestReset) {
-			oldestKey, oldestReset = key, candidate.resetAt
+		if candidate.count >= limiter.limit {
+			continue
+		}
+		if victim == "" || candidate.resetAt.Before(victimReset) {
+			victim, victimReset = key, candidate.resetAt
 		}
 	}
-	if len(limiter.windows) >= maxTrackedRatePrincipals && oldestKey != "" {
-		delete(limiter.windows, oldestKey)
+	if len(limiter.windows) < maxTrackedRatePrincipals {
+		return true
 	}
+	if victim == "" {
+		return false
+	}
+	delete(limiter.windows, victim)
+	return true
 }
 
 func (limiter *principalRateLimiter) reject(response http.ResponseWriter, retryAfter int, message string) {

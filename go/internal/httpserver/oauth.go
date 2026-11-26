@@ -107,10 +107,16 @@ func (body *limitedBody) Read(buffer []byte) (int, error) {
 	if body.remaining <= 0 {
 		// Distinguish an exact-size body from an oversized one.
 		var probe [1]byte
-		if n, _ := body.ReadCloser.Read(probe[:]); n > 0 {
+		n, err := body.ReadCloser.Read(probe[:])
+		if n > 0 {
 			return 0, errJWKSTooLarge
 		}
-		return 0, io.EOF
+		if err == nil {
+			// A zero-byte read without error says nothing; treat the body
+			// as incomplete rather than assume it ended exactly at the cap.
+			return 0, io.ErrNoProgress
+		}
+		return 0, err
 	}
 	if int64(len(buffer)) > body.remaining {
 		buffer = buffer[:body.remaining]

@@ -55,8 +55,8 @@ func TestClientRedactsCredentialFromPropertyNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	echo, _ := value["echo"].(map[string]any)
-	if _, leaked := echo["exact-caller-key"]; leaked || echo["[REDACTED]"] != "value" {
-		t.Fatalf("echo = %#v", echo)
+	if len(echo) != 0 {
+		t.Fatalf("credential-bearing key survived: echo = %#v", echo)
 	}
 }
 
@@ -109,3 +109,42 @@ func TestSampleStreamUsesDedicatedStreamClient(t *testing.T) {
 type doerFunc func(*http.Request) (*http.Response, error)
 
 func (function doerFunc) Do(request *http.Request) (*http.Response, error) { return function(request) }
+
+func TestSampleStreamHandlesCRLFDelimiters(t *testing.T) {
+	client, server := newTestClient(t, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write([]byte("{\"ip\":\"192.0.2.1\"}\r\n{\"ip\":\"192.0.2.2\"}\r\n"))
+	}))
+	defer server.Close()
+
+	events, truncated, err := client.SampleStream(context.Background(), "proxies", 5, 1024, nil)
+	if err != nil || truncated || len(events) != 2 {
+		t.Fatalf("events=%#v truncated=%t error=%v", events, truncated, err)
+	}
+}
+
+func TestSampleStreamReadBudgetCountsBytesFromTheConnection(t *testing.T) {
+	previous := maxStreamReadBytes
+	defer func() { maxStreamReadBytes = previous }()
+	line := "{\"ip\":\"192.0.2.1\"}\r\n"
+	for _, test := range []struct {
+		name      string
+		budget    int64
+		events    int
+		truncated bool
+	}{
+		{name: "budget above stream", budget: int64(len(line)*2 + 1), events: 2},
+		{name: "budget cuts the second line", budget: int64(len(line) + 5), events: 1, truncated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			maxStreamReadBytes = test.budget
+			client, server := newTestClient(t, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = response.Write([]byte(line + line))
+			}))
+			defer server.Close()
+			events, truncated, err := client.SampleStream(context.Background(), "proxies", 5, 1024, nil)
+			if err != nil || truncated != test.truncated || len(events) != test.events {
+				t.Fatalf("events=%d truncated=%t error=%v", len(events), truncated, err)
+			}
+		})
+	}
+}

@@ -68,3 +68,18 @@ func TestGRPCSchemaOutputEnforcesFileBudget(t *testing.T) {
 		t.Fatal("oversized schema was accepted")
 	}
 }
+
+func TestGRPCSchemaOutputEnforcesServiceAndSizeBudgets(t *testing.T) {
+	file := &descriptorpb.FileDescriptorProto{Name: stringPointer("big.proto")}
+	for range maxSchemaServices + 1 {
+		file.Service = append(file.Service, &descriptorpb.ServiceDescriptorProto{Name: stringPointer("S")})
+	}
+	if _, err := grpcSchemaOutput(synthientsdk.GRPCSchemaResult{DescriptorSet: &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{file}}}, false); err == nil {
+		t.Fatal("service budget was not enforced")
+	}
+
+	huge := &descriptorpb.FileDescriptorProto{Name: stringPointer(strings.Repeat("n", maxDescriptorBytes))}
+	if _, err := grpcSchemaOutput(synthientsdk.GRPCSchemaResult{DescriptorSet: &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{huge}}}, false); err == nil {
+		t.Fatal("serialized summary budget was not enforced")
+	}
+}
