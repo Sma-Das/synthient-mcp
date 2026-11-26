@@ -30,6 +30,9 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       stable: ${{ steps.release.outputs.stable }}
+      latest: ${{ steps.release.outputs.latest }}
+      latest_major: ${{ steps.release.outputs.latest_major }}
+      latest_minor: ${{ steps.release.outputs.latest_minor }}
       commit: ${{ steps.release.outputs.commit }}
       build_date: ${{ steps.release.outputs.build_date }}
     steps:
@@ -43,10 +46,12 @@ jobs:
             exit 1
           fi
 
+      # Use the fully-qualified tag ref: a bare name would let a same-named
+      # branch take precedence over the tag.
       - name: Check out release tag
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: refs/tags/${{ env.RELEASE_REF }}
           fetch-depth: 0
 
       - name: Scan repository for secrets
@@ -58,18 +63,61 @@ jobs:
         id: release
         shell: bash
         run: |
+          set -euo pipefail
+          commit="$(git rev-parse --verify "refs/tags/${RELEASE_REF}^{commit}")"
+          if [[ "$(git rev-parse HEAD)" != "$commit" ]]; then
+            echo "Checked-out commit does not match tag $RELEASE_REF" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          # Fully-qualified ref: a tag named origin/main must not shadow it.
+          main_commit="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
+          if ! git merge-base --is-ancestor "$commit" "$main_commit"; then
+            echo "Tag $RELEASE_REF ($commit) is not on main" >&2
+            exit 1
+          fi
+
           version="${RELEASE_REF#v}"
           stable=true
           if [[ "$version" == *-* ]]; then stable=false; fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "stable=$stable" >> "$GITHUB_OUTPUT"
-          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+          # Floating tags (latest, MAJOR, MAJOR.MINOR) only move forward, so
+          # republishing an older release cannot roll them back.
+          # Rank only stable semver tags whose commits are on main, so a stray
+          # tag elsewhere cannot suppress or hijack the floating tags.
+          stable_tags=""
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || continue
+            # Skip tags that do not peel to a commit (for example, a tag on a blob).
+            tag_commit="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}" 2>/dev/null)" || continue
+            git merge-base --is-ancestor "$tag_commit" "$main_commit" || continue
+            stable_tags+="${tag}"$'\n'
+          done < <(git tag --list 'v*')
+          stable_tags="${stable_tags%$'\n'}"
+          highest() { sort -V | tail -n 1; }
+          major="${version%%.*}"
+          minor="${version%.*}"
+          latest=false; latest_major=false; latest_minor=false
+          if [[ "$stable" == "true" ]]; then
+            [[ "$(highest <<<"$stable_tags")" == "$RELEASE_REF" ]] && latest=true
+            [[ "$(grep -E "^v${major}\." <<<"$stable_tags" | highest)" == "$RELEASE_REF" ]] && latest_major=true
+            [[ "$(grep -E "^v${minor//./\\.}\." <<<"$stable_tags" | highest)" == "$RELEASE_REF" ]] && latest_minor=true
+          fi
+
+          {
+            echo "version=$version"
+            echo "stable=$stable"
+            echo "latest=$latest"
+            echo "latest_major=$latest_major"
+            echo "latest_minor=$latest_minor"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.26.x
+          go-version: 1.27.x
           check-latest: true
           cache-dependency-path: go/go.sum
 
@@ -82,10 +130,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check out release tag
+      - name: Check out verified release commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ needs.verify.outputs.commit }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
@@ -101,11 +149,15 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.IMAGE_NAME }}
+          # The semver rules would otherwise add latest automatically; it is
+          # controlled solely by the explicit rule below.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ needs.verify.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.stable == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.stable == 'true' }}
-            type=raw,value=latest,enable=${{ needs.verify.outputs.stable == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.latest_minor == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.verify.outputs.version }},enable=${{ needs.verify.outputs.latest_major == 'true' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.latest == 'true' }}
           labels: |
             org.opencontainers.image.title=Synthient MCP Server
             org.opencontainers.image.description=Dockerized MCP server for the Synthient intelligence API
@@ -139,15 +191,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out release tag
+      - name: Check out verified release commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_REF }}
+          ref: ${{ needs.verify.outputs.commit }}
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: 1.26.x
+          go-version: 1.27.x
           check-latest: true
           cache-dependency-path: go/go.sum
 
@@ -187,10 +239,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           STABLE: ${{ needs.verify.outputs.stable }}
+          LATEST: ${{ needs.verify.outputs.latest }}
+          VERIFIED_COMMIT: ${{ needs.verify.outputs.commit }}
         run: |
           set -euo pipefail
+          # The binaries were built from the verified commit; refuse to attach
+          # them to a tag that has since been moved.
+          remote_refs="$(git ls-remote origin "refs/tags/${RELEASE_REF}" "refs/tags/${RELEASE_REF}^{}")"
+          remote_commit="$(awk -v peeled="refs/tags/${RELEASE_REF}^{}" '$2 == peeled { print $1 }' <<<"$remote_refs")"
+          if [[ -z "$remote_commit" ]]; then
+            remote_commit="$(awk -v ref="refs/tags/${RELEASE_REF}" '$2 == ref { print $1 }' <<<"$remote_refs")"
+          fi
+          if [[ "$remote_commit" != "$VERIFIED_COMMIT" ]]; then
+            echo "Tag $RELEASE_REF now points to ${remote_commit:-nothing}, not verified commit $VERIFIED_COMMIT" >&2
+            exit 1
+          fi
+
           release_flags=()
           if [[ "$STABLE" != "true" ]]; then release_flags+=(--prerelease); fi
+          if [[ "$LATEST" != "true" ]]; then release_flags+=(--latest=false); fi
           gh release create "$RELEASE_REF" dist/* \
             --verify-tag \
             --generate-notes \

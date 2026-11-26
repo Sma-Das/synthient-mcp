@@ -49,6 +49,12 @@ func CanonicalClientIP(request *http.Request, trustedProxyHops int, trustedProxy
 	return chain[index], nil
 }
 
+// TrustedPeer reports whether the direct TCP peer is inside trustedProxyCIDRs.
+func TrustedPeer(request *http.Request, trustedProxyCIDRs []netip.Prefix) bool {
+	peer, err := remoteIP(request.RemoteAddr)
+	return err == nil && trustedAddress(peer, trustedProxyCIDRs)
+}
+
 func trustedAddress(value string, prefixes []netip.Prefix) bool {
 	address, err := netip.ParseAddr(value)
 	if err != nil {

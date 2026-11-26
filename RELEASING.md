@@ -2,6 +2,10 @@
 
 Releases are created only from reviewed commits merged to `main`. Never tag an open pull-request branch or an intermediate branch in a stacked change.
 
+## Repository protection
+
+Protect `v*` tags with a GitHub tag ruleset that blocks updates and deletions. The release workflow builds the commit the tag resolves to, requires it on `main`, and checks the remote tag again before creating the GitHub release, but only a ruleset prevents a tag from being moved in the first place.
+
 ## Prepare
 
 1. Merge the complete pull-request stack in dependency order.

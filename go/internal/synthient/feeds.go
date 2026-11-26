@@ -18,8 +18,11 @@ import (
 
 const (
 	maxStreamEventBytes = 256 << 10
-	maxStreamReadBytes  = 8 << 20
 )
+
+// maxStreamReadBytes bounds the bytes read from one live stream. It is a
+// variable so tests can exercise the boundary.
+var maxStreamReadBytes = int64(8 << 20)
 
 func (c *Client) FeedSnapshots(ctx context.Context, stream string, limit int, cursor string) (synthientsdk.FeedSnapshotsPage, error) {
 	query := url.Values{}
@@ -51,17 +54,21 @@ func (c *Client) GRPCSchema(ctx context.Context, symbols []string) (synthientsdk
 func (c *Client) SampleStream(ctx context.Context, stream string, count int, outputLimit int, filters map[string]string) ([]map[string]any, bool, error) {
 	path := append([]string{"feeds"}, feedPath(stream)...)
 	path = append(path, "stream")
-	request, err := c.newRequest(ctx, http.MethodGet, path)
+	request, err := c.newRequest(ctx, http.MethodGet, path, nil, nil)
 	if err != nil {
 		return nil, false, err
 	}
+	request.Header.Set("Accept", "application/x-ndjson, application/json")
 
 	started := time.Now()
-	doer := c.httpClient
-	if client, ok := c.httpClient.(*http.Client); ok {
-		streamClient := *client
-		streamClient.Timeout = 0
-		doer = &streamClient
+	doer := c.streamClient
+	if doer == nil {
+		doer = c.httpClient
+		if client, ok := c.httpClient.(*http.Client); ok {
+			streamClient := *client
+			streamClient.Timeout = 0
+			doer = &streamClient
+		}
 	}
 	response, err := doer.Do(request)
 	if err != nil {
@@ -77,71 +84,91 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 		return nil, false, &APIError{Status: response.StatusCode, Message: streamError(response.StatusCode, decoded)}
 	}
 
-	scanner := bufio.NewScanner(response.Body)
-	scanner.Buffer(make([]byte, 64<<10), maxStreamEventBytes)
+	// Enforce the read budget below the line reader, on bytes actually taken
+	// from the connection, so read-ahead, CRLF delimiters, and padding count.
+	body := &countingReader{reader: io.LimitReader(response.Body, maxStreamReadBytes)}
+	lines := bufio.NewReaderSize(body, 64<<10)
 	events := make([]map[string]any, 0, count)
-	readBytes := 0
 	outputBytes := 0
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		readBytes += len(line)
-		if readBytes > maxStreamReadBytes {
+	for {
+		raw, terminated, err := readStreamLine(lines, maxStreamEventBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return events, false, nil
+			}
+			return events, false, fmt.Errorf("read Synthient stream: %w", err)
+		}
+		budgetSpent := body.count >= maxStreamReadBytes
+		if !terminated && budgetSpent {
+			// The read budget ended this line early: discard the unfinished
+			// fragment and report truncation, whatever it happens to contain.
 			return events, true, nil
 		}
-		if len(line) == 0 {
-			continue
+		// A complete line, or the final unterminated line of a stream that
+		// ended on its own, is a real event and must decode cleanly.
+		if line := bytes.TrimSpace(raw); len(line) > 0 {
+			event, decodeErr := decodeObject(line)
+			if decodeErr != nil {
+				return events, false, fmt.Errorf("decode Synthient stream event: %w", decodeErr)
+			}
+			event = sanitizeObject(event, c.apiKey)
+			if matchesFilters(event, filters) {
+				// Bound what is returned to the caller: the redacted event as
+				// it will be serialized, plus a separator.
+				encoded, encodeErr := json.Marshal(event)
+				if encodeErr != nil {
+					return events, false, fmt.Errorf("encode Synthient stream event: %w", encodeErr)
+				}
+				if outputBytes+len(encoded)+1 > outputLimit {
+					return events, true, nil
+				}
+				outputBytes += len(encoded) + 1
+				events = append(events, event)
+				if len(events) >= count {
+					return events, false, nil
+				}
+			}
 		}
-		var event map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(line))
-		decoder.UseNumber()
-		if err := decoder.Decode(&event); err != nil {
-			return events, false, fmt.Errorf("decode Synthient stream event: %w", err)
-		}
-		event = sanitizeObject(event, c.apiKey)
-		if !matchesFilters(event, filters) {
-			continue
-		}
-		if outputBytes+len(line) > outputLimit {
-			return events, true, nil
-		}
-		outputBytes += len(line)
-		events = append(events, event)
-		if len(events) >= count {
-			return events, false, nil
+		if err != nil {
+			// EOF: the stream ended, either naturally or at the read budget.
+			return events, budgetSpent, nil
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return events, false, fmt.Errorf("read Synthient stream: %w", err)
-	}
-	return events, false, nil
 }
 
-func (c *Client) newRequest(ctx context.Context, method string, path []string) (*http.Request, error) {
-	if c.baseURL == nil || c.httpClient == nil {
-		return nil, fmt.Errorf("synthient API client is not configured")
-	}
-	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/")
-	for _, segment := range path {
-		if segment == "" {
-			return nil, fmt.Errorf("synthient API path segment cannot be empty")
+var errStreamEventTooLarge = errors.New("stream event exceeds the size limit")
+
+// readStreamLine reads one newline-delimited line of at most limit bytes. It
+// reports whether the line ended with a delimiter; an unterminated line is
+// returned with the error (normally io.EOF) that ended it.
+func readStreamLine(reader *bufio.Reader, limit int) ([]byte, bool, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(line)+len(chunk) > limit+1 {
+			return nil, false, errStreamEventTooLarge
 		}
-		endpoint = *endpoint.JoinPath(url.PathEscape(segment))
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return line[:len(line)-1], true, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return line, false, err
+		}
 	}
-	basePrefix := strings.TrimSuffix(c.baseURL.EscapedPath(), "/") + "/"
-	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
-		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
-	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create Synthient request: %w", err)
-	}
-	request.Header.Set("Accept", "application/x-ndjson, application/json")
-	request.Header.Set("X-API-Key", c.apiKey)
-	if c.forwardedFor != "" {
-		request.Header.Set("X-Forwarded-For", c.forwardedFor)
-	}
-	return request, nil
+}
+
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (reader *countingReader) Read(buffer []byte) (int, error) {
+	n, err := reader.reader.Read(buffer)
+	reader.count += int64(n)
+	return n, err
 }
 
 func requestAsQuery[T any](ctx context.Context, client *Client, method string, path []string, query url.Values, body any) (T, error) {
