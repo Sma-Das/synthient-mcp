@@ -148,3 +148,47 @@ func TestSampleStreamReadBudgetCountsBytesFromTheConnection(t *testing.T) {
 		})
 	}
 }
+
+func TestSampleStreamClassifiesLinesAtTheReadBudget(t *testing.T) {
+	previous := maxStreamReadBytes
+	defer func() { maxStreamReadBytes = previous }()
+	first := "{\"ip\":\"192.0.2.1\"}\n"
+	for _, test := range []struct {
+		name      string
+		stream    string
+		budget    int64
+		count     int
+		events    int
+		truncated bool
+		wantErr   bool
+	}{
+		// A complete malformed line is an upstream error even at the budget.
+		{name: "complete non-object line at budget", stream: first + "[]\n", budget: int64(len(first) + 3), count: 5, events: 1, wantErr: true},
+		// A cut-off line whose prefix happens to be valid JSON is discarded.
+		{name: "cut line with valid prefix", stream: first + "{\"ip\":\"192.0.2.2\"}{\"x\":1}\n", budget: int64(len(first) + len(`{"ip":"192.0.2.2"}`)), count: 2, events: 1, truncated: true},
+		// A stream that ends without a final newline still yields its event.
+		{name: "natural end without newline", stream: first + `{"ip":"192.0.2.2"}`, budget: 1 << 20, count: 5, events: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			maxStreamReadBytes = test.budget
+			client, server := newTestClient(t, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = response.Write([]byte(test.stream))
+			}))
+			defer server.Close()
+			events, truncated, err := client.SampleStream(context.Background(), "proxies", test.count, 1024, nil)
+			if (err != nil) != test.wantErr || truncated != test.truncated || len(events) != test.events {
+				t.Fatalf("events=%d truncated=%t error=%v", len(events), truncated, err)
+			}
+		})
+	}
+}
+
+func TestSampleStreamRejectsOversizedEvents(t *testing.T) {
+	client, server := newTestClient(t, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write([]byte("{\"pad\":\"" + strings.Repeat("x", maxStreamEventBytes) + "\"}\n"))
+	}))
+	defer server.Close()
+	if _, _, err := client.SampleStream(context.Background(), "proxies", 1, 1<<20, nil); err == nil {
+		t.Fatal("oversized event was accepted")
+	}
+}

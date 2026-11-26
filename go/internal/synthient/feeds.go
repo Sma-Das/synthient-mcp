@@ -84,50 +84,80 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 		return nil, false, &APIError{Status: response.StatusCode, Message: streamError(response.StatusCode, decoded)}
 	}
 
-	// Enforce the read budget below the scanner, on bytes actually taken from
-	// the connection, so read-ahead, CRLF delimiters, and padding all count.
+	// Enforce the read budget below the line reader, on bytes actually taken
+	// from the connection, so read-ahead, CRLF delimiters, and padding count.
 	body := &countingReader{reader: io.LimitReader(response.Body, maxStreamReadBytes)}
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64<<10), maxStreamEventBytes)
+	lines := bufio.NewReaderSize(body, 64<<10)
 	events := make([]map[string]any, 0, count)
 	outputBytes := 0
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		event, err := decodeObject(line)
-		if err != nil {
-			if body.count >= maxStreamReadBytes {
-				// The budget cut the final line short; that is truncation, not
-				// a malformed upstream event.
-				return events, true, nil
+	for {
+		raw, terminated, err := readStreamLine(lines, maxStreamEventBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return events, false, nil
 			}
-			return events, false, fmt.Errorf("decode Synthient stream event: %w", err)
+			return events, false, fmt.Errorf("read Synthient stream: %w", err)
 		}
-		event = sanitizeObject(event, c.apiKey)
-		if !matchesFilters(event, filters) {
-			continue
-		}
-		// Bound what is returned to the caller: the redacted event as it will
-		// be serialized, plus a separator.
-		encoded, err := json.Marshal(event)
-		if err != nil {
-			return events, false, fmt.Errorf("encode Synthient stream event: %w", err)
-		}
-		if outputBytes+len(encoded)+1 > outputLimit {
+		budgetSpent := body.count >= maxStreamReadBytes
+		if !terminated && budgetSpent {
+			// The read budget ended this line early: discard the unfinished
+			// fragment and report truncation, whatever it happens to contain.
 			return events, true, nil
 		}
-		outputBytes += len(encoded) + 1
-		events = append(events, event)
-		if len(events) >= count {
-			return events, false, nil
+		// A complete line, or the final unterminated line of a stream that
+		// ended on its own, is a real event and must decode cleanly.
+		if line := bytes.TrimSpace(raw); len(line) > 0 {
+			event, decodeErr := decodeObject(line)
+			if decodeErr != nil {
+				return events, false, fmt.Errorf("decode Synthient stream event: %w", decodeErr)
+			}
+			event = sanitizeObject(event, c.apiKey)
+			if matchesFilters(event, filters) {
+				// Bound what is returned to the caller: the redacted event as
+				// it will be serialized, plus a separator.
+				encoded, encodeErr := json.Marshal(event)
+				if encodeErr != nil {
+					return events, false, fmt.Errorf("encode Synthient stream event: %w", encodeErr)
+				}
+				if outputBytes+len(encoded)+1 > outputLimit {
+					return events, true, nil
+				}
+				outputBytes += len(encoded) + 1
+				events = append(events, event)
+				if len(events) >= count {
+					return events, false, nil
+				}
+			}
+		}
+		if err != nil {
+			// EOF: the stream ended, either naturally or at the read budget.
+			return events, budgetSpent, nil
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return events, false, fmt.Errorf("read Synthient stream: %w", err)
+}
+
+var errStreamEventTooLarge = errors.New("stream event exceeds the size limit")
+
+// readStreamLine reads one newline-delimited line of at most limit bytes. It
+// reports whether the line ended with a delimiter; an unterminated line is
+// returned with the error (normally io.EOF) that ended it.
+func readStreamLine(reader *bufio.Reader, limit int) ([]byte, bool, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(line)+len(chunk) > limit+1 {
+			return nil, false, errStreamEventTooLarge
+		}
+		line = append(line, chunk...)
+		switch {
+		case err == nil:
+			return line[:len(line)-1], true, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return line, false, err
+		}
 	}
-	return events, body.count >= maxStreamReadBytes, nil
 }
 
 type countingReader struct {
