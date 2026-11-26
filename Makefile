@@ -1,16 +1,20 @@
 GO_DIR := go
-GOVULNCHECK_VERSION := v1.7.0
-STATICCHECK_VERSION := v0.7.0
+GOVULNCHECK_VERSION := v1.10.0
+STATICCHECK_VERSION := v0.8.2
 
 .PHONY: all fmt fmt-check tidy-check vet staticcheck test race cover vuln build binary docker-check docker-build smoke ci
 
 all: ci
 
+# Resolve gofmt from the active Go toolchain so fmt-check cannot pass vacuously
+# when gofmt is missing from PATH.
+GOFMT := $(shell go env GOROOT)/bin/gofmt
+
 fmt:
-	cd $(GO_DIR) && gofmt -w .
+	cd $(GO_DIR) && $(GOFMT) -w .
 
 fmt-check:
-	@files="$$(cd $(GO_DIR) && gofmt -l .)"; test -z "$$files" || { echo "gofmt required:"; echo "$$files"; exit 1; }
+	@files="$$(cd $(GO_DIR) && $(GOFMT) -l .)" || exit 1; test -z "$$files" || { echo "gofmt required:"; echo "$$files"; exit 1; }
 
 tidy-check:
 	cd $(GO_DIR) && go mod tidy -diff

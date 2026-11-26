@@ -2,7 +2,7 @@
 
 ## Development workflow
 
-Go 1.25 or newer, Docker, and Make are required.
+Go 1.26 or newer, Docker, and Make are required.
 
 ```bash
 make fmt

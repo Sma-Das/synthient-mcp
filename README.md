@@ -1,6 +1,6 @@
 # Synthient MCP Server in Go — IP, Domain, and Threat Intelligence
 
-[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-2026--07--28-6f42c1)](https://modelcontextprotocol.io/)
 [![CI](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml)
 [![Docker pulls](https://img.shields.io/docker/pulls/smadas/synthient-mcp?logo=docker)](https://hub.docker.com/r/smadas/synthient-mcp)
@@ -228,7 +228,7 @@ No. This is an independent, community-maintained implementation that uses Synthi
 
 ## Development
 
-Go 1.25 or newer, Docker, and Make are supported:
+Go 1.26 or newer, Docker, and Make are supported:
 
 ```bash
 make test
