@@ -172,6 +172,20 @@ func newLogger(cfg config.Config) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, options))
 }
 
+// healthcheckHost returns the loopback or bound address to probe for a HOST
+// setting: wildcard binds are probed on loopback of the same family, and a
+// specific bind address is probed directly.
+func healthcheckHost(bind string) string {
+	host := strings.Trim(strings.TrimSpace(bind), "[]")
+	switch host {
+	case "", "0.0.0.0", "localhost":
+		return "127.0.0.1"
+	case "::":
+		return "::1"
+	}
+	return host
+}
+
 func healthcheck() error {
 	port := 3000
 	if value := os.Getenv("PORT"); value != "" {
@@ -182,7 +196,7 @@ func healthcheck() error {
 		port = parsed
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/healthz")
+	response, err := client.Get("http://" + net.JoinHostPort(healthcheckHost(os.Getenv("HOST")), strconv.Itoa(port)) + "/healthz")
 	if err != nil {
 		return fmt.Errorf("healthcheck: %w", err)
 	}

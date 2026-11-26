@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	synthientsdk "github.com/synthient/go-synthient/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -21,6 +24,9 @@ const (
 	maxSampleTimeout     = 15
 	maxSampleOutputBytes = 1 << 20
 	maxDescriptorBytes   = 1 << 20
+	maxSchemaFiles       = 1000
+	maxSchemaServices    = 500
+	maxSchemaMethods     = 5000
 )
 
 type FeedStream struct {
@@ -194,7 +200,7 @@ func registerFeedTools(server *mcp.Server, client API, options Options) {
 			defer cancel()
 			result, err := client.GRPCSchema(schemaCtx, input.Symbols)
 			if err != nil {
-				return nil, GRPCSchemaOutput{}, err
+				return nil, GRPCSchemaOutput{}, safeGRPCError(err)
 			}
 			output, err := grpcSchemaOutput(result, input.IncludeDescriptor)
 			if err != nil {
@@ -274,8 +280,20 @@ func grpcSchemaOutput(result synthientsdk.GRPCSchemaResult, includeDescriptor bo
 	if result.DescriptorSet == nil {
 		return GRPCSchemaOutput{}, fmt.Errorf("synthient gRPC reflection returned no descriptor set")
 	}
-	output := GRPCSchemaOutput{Endpoint: result.Endpoint, Symbols: result.Symbols, Services: summarizeServices(result.DescriptorSet)}
-	for _, file := range result.DescriptorSet.GetFile() {
+	files := result.DescriptorSet.GetFile()
+	if len(files) > maxSchemaFiles {
+		return GRPCSchemaOutput{}, fmt.Errorf("schema contains %d files, above the %d-file limit; request specific symbols", len(files), maxSchemaFiles)
+	}
+	services := summarizeServices(result.DescriptorSet)
+	methods := 0
+	for _, service := range services {
+		methods += len(service.Methods)
+	}
+	if len(services) > maxSchemaServices || methods > maxSchemaMethods {
+		return GRPCSchemaOutput{}, fmt.Errorf("schema exceeds the %d-service or %d-method summary limit; request specific symbols", maxSchemaServices, maxSchemaMethods)
+	}
+	output := GRPCSchemaOutput{Endpoint: result.Endpoint, Symbols: result.Symbols, Services: services}
+	for _, file := range files {
 		output.Files = append(output.Files, GRPCFile{Name: file.GetName(), Package: file.GetPackage()})
 	}
 	if includeDescriptor {
@@ -289,6 +307,21 @@ func grpcSchemaOutput(result synthientsdk.GRPCSchemaResult, includeDescriptor bo
 		output.DescriptorJSON = string(descriptor)
 	}
 	return output, nil
+}
+
+// safeGRPCError maps reflection failures to messages that never echo upstream
+// status text, which is not guaranteed to be free of request details.
+func safeGRPCError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("synthient gRPC reflection timed out")
+	}
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("synthient gRPC reflection was canceled")
+	}
+	if code := status.Code(err); code != codes.Unknown {
+		return fmt.Errorf("synthient gRPC reflection failed: %s", code)
+	}
+	return fmt.Errorf("synthient gRPC reflection failed")
 }
 
 func summarizeServices(set *descriptorpb.FileDescriptorSet) []GRPCService {

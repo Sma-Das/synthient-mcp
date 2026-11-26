@@ -1,6 +1,6 @@
 # Synthient MCP Server in Go — IP, Domain, and Threat Intelligence
 
-[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26.11%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![Model Context Protocol](https://img.shields.io/badge/MCP-2026--07--28-6f42c1)](https://modelcontextprotocol.io/)
 [![CI](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Sma-Das/synthient-mcp/actions/workflows/ci.yml)
 [![Docker pulls](https://img.shields.io/docker/pulls/smadas/synthient-mcp?logo=docker)](https://hub.docker.com/r/smadas/synthient-mcp)
@@ -33,7 +33,8 @@ The server uses the official MCP Go SDK and currently negotiates protocol `2026-
 - Credential-shaped fields and the literal caller key are removed from upstream results and errors.
 - Host and browser-Origin checks protect the MCP endpoint. Caller-IP forwarding is disabled by default and trusts proxy headers only when explicitly enabled with configured proxy CIDRs.
 - Request bodies, headers, upstream duration, live-stream duration, response size, request rate, and concurrent work are bounded.
-- The container runs without root, capabilities, or a writable root filesystem.
+- The image runs as a non-root user from a `scratch` base. The Compose file and the quick-start command also drop all capabilities and mount the root filesystem read-only.
+- JSON-RPC batch requests are rejected, so every tool call consumes its own concurrency slot and rate-limit unit.
 
 API-key mode is intended for loopback and controlled self-hosting. Public deployments should use OAuth mode or an authenticated gateway, TLS, network restrictions, and an edge rate limit in addition to the server's per-principal limit. Host validation is not network access control.
 
@@ -43,8 +44,11 @@ Run the published [`smadas/synthient-mcp` Docker image](https://hub.docker.com/r
 
 ```bash
 docker pull smadas/synthient-mcp:latest
-docker run --rm -p 127.0.0.1:3000:3000 smadas/synthient-mcp:latest
+docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  -p 127.0.0.1:3000:3000 smadas/synthient-mcp:latest
 ```
+
+The image already runs as a non-root user; the flags above add the read-only root filesystem, dropped capabilities, and no-new-privileges settings that `compose.yaml` applies.
 
 For reproducible production deployment, pin the image digest shown by the release workflow rather than relying on a mutable tag.
 
@@ -117,6 +121,10 @@ The stdio transport reads credentials from the environment, writes only MCP prot
 
 Set `AUTH_MODE=oauth` for a managed remote deployment. The server validates JWT signatures through the configured JWKS endpoint, issuer, audience, expiration, subject, and required scopes. It publishes RFC 9728 Protected Resource Metadata and returns its URL in `WWW-Authenticate` challenges so compatible MCP clients can discover the authorization server.
 
+Access tokens must be JWTs signed with an asymmetric algorithm (`RS256`/`384`/`512`, `PS256`/`384`/`512`, `ES256`/`384`/`512`, or `EdDSA`). Set `OAUTH_AUDIENCE` to a value that only access tokens for this resource carry, normally `MCP_RESOURCE_URL`. The verifier does not inspect the token type, so an audience shared with ID tokens or other APIs would let those tokens through. Opaque tokens that require introspection are not supported.
+
+JWKS fetches have their own 10-second deadline and a 1 MiB response cap, and each token verification is bounded to 5 seconds. A stalled identity provider therefore fails requests quickly and does not hold MCP request slots.
+
 OAuth access tokens and Synthient credentials are deliberately separate. `SYNTHIENT_API_KEY` is a server-side downstream credential only in this mode and is never derived from or replaced by the inbound bearer token.
 
 ## Tools and metering
@@ -132,9 +140,9 @@ OAuth access tokens and Synthient credentials are deliberately separate. `SYNTHI
 | `sample_stream` | `GET /api/v4/feeds/.../stream` | Returns at most 50 filtered events, 1 MiB of output, or 15 seconds of live data |
 | `grpc_schema` | Synthient gRPC reflection | Returns a bounded service summary; descriptor JSON is optional and limited to 1 MiB |
 
-Tool names and response shapes follow Synthient's official MCP contract. Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. Results use the official typed Synthient SDK models and include structured content plus a useful short text summary.
+Tool names and response shapes follow Synthient's official MCP contract. Lookup tools are advertised conservatively as metered, non-idempotent operations so MCP clients do not assume that automatic retries are cost-free. The server never retries a lookup itself. Go's HTTP client may resend a single-address or domain `GET` once, if a reused upstream connection drops before any response arrives, so in that rare case Synthient could meter one lookup twice. Results use the official typed Synthient SDK models and include structured content plus a useful short text summary.
 
-Existing clients that used this project's pre-contract names can set `LEGACY_TOOL_NAMES=true` temporarily. This adds `synthient_account`, `synthient_lookup_ip`, `synthient_lookup_ips`, and `synthient_lookup_domain` as aliases; it does not replace the canonical tools. Leave it disabled for new installations because duplicate tools add model-selection ambiguity. Remove the flag after migrating client prompts and allowlists.
+Existing clients that used this project's pre-contract names can set `LEGACY_TOOL_NAMES=true` temporarily. This adds `synthient_account`, `synthient_lookup_ip`, `synthient_lookup_ips`, and `synthient_lookup_domain` as aliases; it does not replace the canonical tools. As in v0.1, the aliases return the JSON payload as their text content, so clients that parse the text keep working. Leave it disabled for new installations because duplicate tools add model-selection ambiguity. Remove the flag after migrating client prompts and allowlists.
 
 The server deliberately does not expose snapshot downloads as MCP results. Parquet files are too large for model context; use Synthient's official CLI for download and checksum verification.
 
@@ -200,11 +208,11 @@ docker compose up --build -d
 
 Caller-IP forwarding is normally unnecessary. When enabled, the direct TCP peer and every removed proxy hop must fall within `TRUSTED_PROXY_CIDRS`; short or inconsistent chains fail closed. Use the actual proxy-network CIDR if the proxy does not connect over host loopback. Ensure only the proxy can reach the published port.
 
-`ALLOWED_ORIGINS` always controls browser-origin admission. Set `CORS_ENABLED=true` only when those origins must call the server directly; preflights remain exact-host and exact-origin, and wildcard credentialed CORS is never emitted.
+`ALLOWED_ORIGINS` always controls cross-origin browser admission. Same-origin requests are always admitted. Behind a TLS-terminating proxy, the scheme is taken from `X-Forwarded-Proto` only when the direct peer is in `TRUSTED_PROXY_CIDRS` and `TRUST_PROXY_HOPS` is at least 1. Set `CORS_ENABLED=true` only when those origins must call the server directly. Preflights remain exact-host and exact-origin, allow the MCP `Mcp-Method` and `Mcp-Name` headers, and expose `WWW-Authenticate` so browser clients can discover OAuth metadata. Wildcard credentialed CORS is never emitted.
 
 ## Observability
 
-Requests receive an `X-Request-ID`. Logs contain method, fixed route, status, duration, version, and safe capacity settings. They intentionally omit API keys, request/response bodies, queried IPs and domains, and forwarding chains.
+Requests receive an `X-Request-ID`. Logs contain method, matched route pattern (or `unmatched`), status, duration, version, and safe capacity settings. The raw request path is never logged. They intentionally omit API keys, request/response bodies, queried IPs and domains, and forwarding chains.
 
 Optional metrics expose only bounded counters for HTTP traffic, global concurrency rejection, per-principal concurrency and rate rejection, upstream outcome classes, and cumulative upstream duration. `/healthz` is a liveness check and does not make Synthient availability a readiness dependency.
 
@@ -228,7 +236,7 @@ No. This is an independent, community-maintained implementation that uses Synthi
 
 ## Development
 
-Go 1.26 or newer, Docker, and Make are supported:
+Go 1.26.11 or newer, Docker, and Make are supported:
 
 ```bash
 make test

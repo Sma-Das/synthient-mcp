@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,11 +26,20 @@ type Client struct {
 	forwardedFor string
 	grpcEndpoint string
 	httpClient   HTTPDoer
+	streamClient HTTPDoer
 	observer     Observer
 }
 
 func (c *Client) WithGRPCEndpoint(endpoint string) *Client {
 	c.grpcEndpoint = strings.TrimSpace(endpoint)
+	return c
+}
+
+// WithStreamHTTPClient sets the client used for live feed samples. Samples are
+// bounded by their operation context, so this client should not impose a
+// shorter overall or response-header timeout.
+func (c *Client) WithStreamHTTPClient(httpClient HTTPDoer) *Client {
+	c.streamClient = withoutRedirects(httpClient)
 	return c
 }
 
@@ -51,23 +62,30 @@ func (e *APIError) Error() string {
 }
 
 func NewClient(baseURL *url.URL, apiKey, forwardedFor string, httpClient HTTPDoer, observers ...Observer) *Client {
-	if standardClient, ok := httpClient.(*http.Client); ok {
-		clone := *standardClient
-		clone.CheckRedirect = func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-		httpClient = &clone
-	}
 	client := &Client{
 		baseURL:      baseURL,
 		apiKey:       apiKey,
 		forwardedFor: forwardedFor,
-		httpClient:   httpClient,
+		httpClient:   withoutRedirects(httpClient),
 	}
 	if len(observers) > 0 {
 		client.observer = observers[0]
 	}
 	return client
+}
+
+// withoutRedirects returns a copy of a standard client that never follows
+// redirects, so the caller's credential cannot be replayed to another origin.
+func withoutRedirects(httpClient HTTPDoer) HTTPDoer {
+	standardClient, ok := httpClient.(*http.Client)
+	if !ok || standardClient == nil {
+		return httpClient
+	}
+	clone := *standardClient
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
 }
 
 func (c *Client) Account(ctx context.Context) (synthientsdk.Account, error) {
@@ -93,20 +111,7 @@ func (c *Client) LookupDomain(ctx context.Context, domain string) (synthientsdk.
 }
 
 func requestAs[T any](ctx context.Context, client *Client, method string, path []string, body any) (T, error) {
-	var zero T
-	value, err := client.request(ctx, method, path, body)
-	if err != nil {
-		return zero, err
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return zero, fmt.Errorf("encode typed Synthient response: %w", err)
-	}
-	var typed T
-	if err := json.Unmarshal(raw, &typed); err != nil {
-		return zero, &APIError{Status: http.StatusBadGateway, Message: "Synthient API response did not match the expected contract"}
-	}
-	return typed, nil
+	return requestAsQuery[T](ctx, client, method, path, nil, body)
 }
 
 func (c *Client) request(ctx context.Context, method string, path []string, body any) (map[string]any, error) {
@@ -114,27 +119,6 @@ func (c *Client) request(ctx context.Context, method string, path []string, body
 }
 
 func (c *Client) requestQuery(ctx context.Context, method string, path []string, query url.Values, body any) (map[string]any, error) {
-	if c.baseURL == nil {
-		return nil, fmt.Errorf("synthient API base URL is not configured")
-	}
-	if c.httpClient == nil {
-		return nil, fmt.Errorf("synthient HTTP client is not configured")
-	}
-
-	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/")
-	for _, segment := range path {
-		if segment == "" {
-			return nil, fmt.Errorf("synthient API path segment cannot be empty")
-		}
-		endpoint = *endpoint.JoinPath(url.PathEscape(segment))
-	}
-	basePrefix := strings.TrimSuffix(c.baseURL.EscapedPath(), "/") + "/"
-	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
-		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
-	}
-	endpoint.RawQuery = query.Encode()
-
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -143,17 +127,11 @@ func (c *Client) requestQuery(ctx context.Context, method string, path []string,
 		}
 		reader = bytes.NewReader(encoded)
 	}
-
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), reader)
+	request, err := c.newRequest(ctx, method, path, query, reader)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", buildinfo.UserAgent())
-	request.Header.Set("X-API-Key", c.apiKey)
-	if c.forwardedFor != "" {
-		request.Header.Set("X-Forwarded-For", c.forwardedFor)
-	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -183,12 +161,16 @@ func (c *Client) requestQuery(ctx context.Context, method string, path []string,
 		if detail != "" {
 			message += ": " + detail
 		}
-		if response.StatusCode == http.StatusTooManyRequests && response.Header.Get("Retry-After") != "" {
-			message += ". Retry-After: " + response.Header.Get("Retry-After")
+		retryAfter := ""
+		if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable {
+			retryAfter = parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
+		}
+		if retryAfter != "" {
+			message += ". Retry after " + retryAfter + " seconds"
 		}
 		return nil, &APIError{
 			Status:     response.StatusCode,
-			RetryAfter: response.Header.Get("Retry-After"),
+			RetryAfter: retryAfter,
 			Message:    message,
 		}
 	}
@@ -196,6 +178,66 @@ func (c *Client) requestQuery(ctx context.Context, method string, path []string,
 		return nil, &APIError{Status: http.StatusBadGateway, Message: "Synthient API returned an invalid JSON object"}
 	}
 	return decoded, nil
+}
+
+// newRequest builds a request for a path under the configured base URL. Each
+// segment is escaped, and the result must stay under the base path, so caller
+// input can never redirect the credential to another endpoint.
+func (c *Client) newRequest(ctx context.Context, method string, path []string, query url.Values, body io.Reader) (*http.Request, error) {
+	if c.baseURL == nil {
+		return nil, fmt.Errorf("synthient API base URL is not configured")
+	}
+	if c.httpClient == nil {
+		return nil, fmt.Errorf("synthient HTTP client is not configured")
+	}
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/")
+	endpoint.RawPath = ""
+	for _, segment := range path {
+		if segment == "" {
+			return nil, fmt.Errorf("synthient API path segment cannot be empty")
+		}
+		endpoint = *endpoint.JoinPath(url.PathEscape(segment))
+	}
+	basePrefix := strings.TrimSuffix(c.baseURL.EscapedPath(), "/") + "/"
+	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
+		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
+	}
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("create Synthient request: %w", err)
+	}
+	request.Header.Set("User-Agent", buildinfo.UserAgent())
+	request.Header.Set("X-API-Key", c.apiKey)
+	if c.forwardedFor != "" {
+		request.Header.Set("X-Forwarded-For", c.forwardedFor)
+	}
+	return request, nil
+}
+
+// maxRetryAfterSeconds caps upstream retry guidance relayed to callers.
+const maxRetryAfterSeconds = 86400
+
+// parseRetryAfter normalizes a Retry-After header to a whole number of
+// seconds. It accepts delta-seconds or an HTTP date and returns "" for
+// anything else, so raw upstream header text is never relayed to callers.
+func parseRetryAfter(value string, now time.Time) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	seconds := -1
+	if parsed, err := strconv.Atoi(value); err == nil {
+		seconds = parsed
+	} else if when, err := http.ParseTime(value); err == nil {
+		seconds = int(math.Ceil(when.Sub(now).Seconds()))
+		seconds = max(seconds, 0)
+	}
+	if seconds < 0 {
+		return ""
+	}
+	return strconv.Itoa(min(seconds, maxRetryAfterSeconds))
 }
 
 func (c *Client) observe(status int, duration time.Duration) {
@@ -255,6 +297,9 @@ func sanitizeValue(value any, secret string) any {
 		for key, item := range value {
 			if sensitiveKey(key) {
 				continue
+			}
+			if secret != "" {
+				key = strings.ReplaceAll(key, secret, "[REDACTED]")
 			}
 			cleaned[key] = sanitizeValue(item, secret)
 		}

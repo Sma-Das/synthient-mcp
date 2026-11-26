@@ -20,6 +20,9 @@ type LegacyIPsOutput struct {
 	Results []synthientsdk.IP `json:"results"`
 }
 
+// registerLegacyTools adds the v0.1 tool names. Their handlers return a nil
+// result so the SDK serializes the structured output as JSON text, matching
+// the v0.1 wire format that legacy clients parse.
 func registerLegacyTools(server *mcp.Server, client API) {
 	mcp.AddTool(server, tool("synthient_account", "Get Synthient account (legacy)", "Legacy compatibility alias for get_account.", false, emptyInputSchema()),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ EmptyInput) (*mcp.CallToolResult, synthientsdk.Account, error) {
@@ -27,7 +30,7 @@ func registerLegacyTools(server *mcp.Server, client API) {
 			if err != nil {
 				return nil, synthientsdk.Account{}, err
 			}
-			return successResult(accountSummary(account)), account, nil
+			return nil, account, nil
 		})
 
 	mcp.AddTool(server, tool("synthient_lookup_ip", "Look up one IP (legacy)", "Legacy single-address compatibility alias; prefer lookup_ip with an ips array.", true, nil),
@@ -40,7 +43,7 @@ func registerLegacyTools(server *mcp.Server, client API) {
 			if err != nil {
 				return nil, synthientsdk.IP{}, err
 			}
-			return successResult(ipSummary([]synthientsdk.IP{value})), value, nil
+			return nil, value, nil
 		})
 
 	mcp.AddTool(server, tool("synthient_lookup_ips", "Look up multiple IPs (legacy)", "Legacy batch compatibility alias; prefer lookup_ip with an ips array.", true, nil),
@@ -60,7 +63,7 @@ func registerLegacyTools(server *mcp.Server, client API) {
 			if err != nil {
 				return nil, LegacyIPsOutput{}, err
 			}
-			return successResult(ipSummary(values)), LegacyIPsOutput{Results: values}, nil
+			return nil, LegacyIPsOutput{Results: values}, nil
 		})
 
 	mcp.AddTool(server, tool("synthient_lookup_domain", "Look up a domain (legacy)", "Legacy compatibility alias for lookup_domain.", true, nil),
@@ -73,6 +76,6 @@ func registerLegacyTools(server *mcp.Server, client API) {
 			if err != nil {
 				return nil, synthientsdk.Domain{}, err
 			}
-			return successResult(domainSummary(value)), value, nil
+			return nil, value, nil
 		})
 }

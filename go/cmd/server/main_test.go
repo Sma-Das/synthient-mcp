@@ -64,3 +64,19 @@ func TestStdioRequiresAPIKey(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestHealthcheckHostFollowsBindAddress(t *testing.T) {
+	for bind, want := range map[string]string{
+		"":          "127.0.0.1",
+		"0.0.0.0":   "127.0.0.1",
+		"localhost": "127.0.0.1",
+		"::":        "::1",
+		"[::]":      "::1",
+		"::1":       "::1",
+		"10.1.2.3":  "10.1.2.3",
+	} {
+		if got := healthcheckHost(bind); got != want {
+			t.Errorf("healthcheckHost(%q) = %q; want %q", bind, got, want)
+		}
+	}
+}

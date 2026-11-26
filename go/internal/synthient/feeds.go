@@ -51,17 +51,21 @@ func (c *Client) GRPCSchema(ctx context.Context, symbols []string) (synthientsdk
 func (c *Client) SampleStream(ctx context.Context, stream string, count int, outputLimit int, filters map[string]string) ([]map[string]any, bool, error) {
 	path := append([]string{"feeds"}, feedPath(stream)...)
 	path = append(path, "stream")
-	request, err := c.newRequest(ctx, http.MethodGet, path)
+	request, err := c.newRequest(ctx, http.MethodGet, path, nil, nil)
 	if err != nil {
 		return nil, false, err
 	}
+	request.Header.Set("Accept", "application/x-ndjson, application/json")
 
 	started := time.Now()
-	doer := c.httpClient
-	if client, ok := c.httpClient.(*http.Client); ok {
-		streamClient := *client
-		streamClient.Timeout = 0
-		doer = &streamClient
+	doer := c.streamClient
+	if doer == nil {
+		doer = c.httpClient
+		if client, ok := c.httpClient.(*http.Client); ok {
+			streamClient := *client
+			streamClient.Timeout = 0
+			doer = &streamClient
+		}
 	}
 	response, err := doer.Do(request)
 	if err != nil {
@@ -83,28 +87,35 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 	readBytes := 0
 	outputBytes := 0
 	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		readBytes += len(line)
+		raw := scanner.Bytes()
+		// Count bytes as received, including the line delimiter, so the read
+		// budget cannot be stretched with padding.
+		readBytes += len(raw) + 1
 		if readBytes > maxStreamReadBytes {
 			return events, true, nil
 		}
+		line := bytes.TrimSpace(raw)
 		if len(line) == 0 {
 			continue
 		}
-		var event map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(line))
-		decoder.UseNumber()
-		if err := decoder.Decode(&event); err != nil {
+		event, err := decodeObject(line)
+		if err != nil {
 			return events, false, fmt.Errorf("decode Synthient stream event: %w", err)
 		}
 		event = sanitizeObject(event, c.apiKey)
 		if !matchesFilters(event, filters) {
 			continue
 		}
-		if outputBytes+len(line) > outputLimit {
+		// Bound what is returned to the caller: the redacted event as it will
+		// be serialized, plus a separator.
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return events, false, fmt.Errorf("encode Synthient stream event: %w", err)
+		}
+		if outputBytes+len(encoded)+1 > outputLimit {
 			return events, true, nil
 		}
-		outputBytes += len(line)
+		outputBytes += len(encoded) + 1
 		events = append(events, event)
 		if len(events) >= count {
 			return events, false, nil
@@ -114,34 +125,6 @@ func (c *Client) SampleStream(ctx context.Context, stream string, count int, out
 		return events, false, fmt.Errorf("read Synthient stream: %w", err)
 	}
 	return events, false, nil
-}
-
-func (c *Client) newRequest(ctx context.Context, method string, path []string) (*http.Request, error) {
-	if c.baseURL == nil || c.httpClient == nil {
-		return nil, fmt.Errorf("synthient API client is not configured")
-	}
-	endpoint := *c.baseURL
-	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/")
-	for _, segment := range path {
-		if segment == "" {
-			return nil, fmt.Errorf("synthient API path segment cannot be empty")
-		}
-		endpoint = *endpoint.JoinPath(url.PathEscape(segment))
-	}
-	basePrefix := strings.TrimSuffix(c.baseURL.EscapedPath(), "/") + "/"
-	if endpoint.Scheme != c.baseURL.Scheme || endpoint.Host != c.baseURL.Host || !strings.HasPrefix(endpoint.EscapedPath(), basePrefix) {
-		return nil, fmt.Errorf("synthient API path escaped the configured endpoint")
-	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("create Synthient request: %w", err)
-	}
-	request.Header.Set("Accept", "application/x-ndjson, application/json")
-	request.Header.Set("X-API-Key", c.apiKey)
-	if c.forwardedFor != "" {
-		request.Header.Set("X-Forwarded-For", c.forwardedFor)
-	}
-	return request, nil
 }
 
 func requestAsQuery[T any](ctx context.Context, client *Client, method string, path []string, query url.Values, body any) (T, error) {
